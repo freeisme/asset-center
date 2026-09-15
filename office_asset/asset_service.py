@@ -2375,6 +2375,7 @@ class AssetService:
               'issuedBy', COALESCE(allocation.issued_by, 0),
               'typeId', COALESCE(allocation.non_asset_type_id, 0),
               'modelId', COALESCE(allocation.inventory_model_id, 0),
+              'usageBrandId', COALESCE(monitor_usage.inventory_brand_id, non_asset_usage.inventory_brand_id, 0),
               'warehouseId', COALESCE(allocation.warehouse_id, 0),
               'usageRecordId', COALESCE(allocation.usage_record_id, 0),
               'quantity', allocation.quantity,
@@ -2414,33 +2415,36 @@ class AssetService:
         quantity = self.db.integer(allocation.get("quantity"), 0)
         stock_adjusted = self.db.integer(allocation.get("stockAdjusted"), 1) == 1
         source_warehouse_id = self.db.integer(allocation.get("warehouseId"), 0)
-        target_warehouse = None
-        if stock_adjusted:
-            if source_warehouse_id > 0:
-                source_warehouse = self._warehouse(source_warehouse_id, include_inactive=True)
-                self._assert_warehouse_access(
-                    context,
-                    source_warehouse,
-                    "inventory_operations",
-                )
-                self._assert_warehouse_access(
-                    context,
-                    source_warehouse,
-                    "warehouse_management",
-                )
-            target_warehouse = self._resolve_warehouse(
-                payload,
+        if source_warehouse_id > 0:
+            source_warehouse = self._warehouse(source_warehouse_id, include_inactive=True)
+            self._assert_warehouse_access(
                 context,
+                source_warehouse,
                 "inventory_operations",
-                preferred_org_id=self._actor_org_id(context),
             )
-        elif self.db.integer(payload.get("warehouseId"), 0) > 0:
-            raise self.api_error("Inventory registered without stock deduction cannot be returned to a warehouse.")
+            self._assert_warehouse_access(
+                context,
+                source_warehouse,
+                "warehouse_management",
+            )
+        # 回收统一入库：登记时未扣减库存的物资在归还/回收时同样进入库存，
+        # 缺少库存型号时按品牌型号自动补齐目录。
+        target_warehouse = self._resolve_warehouse(
+            payload,
+            context,
+            "inventory_operations",
+            preferred_org_id=self._actor_org_id(context),
+        )
         target_warehouse_id = self.db.integer((target_warehouse or {}).get("id"), 0)
-        target_warehouse_id_sql = str(target_warehouse_id) if target_warehouse_id > 0 else "NULL"
+        if target_warehouse_id <= 0:
+            raise self.conflict_error("请选择回收目标仓库。")
+        target_warehouse_id_sql = str(target_warehouse_id)
         usage_id = self.db.integer(allocation.get("usageRecordId"), 0)
         usage_table = "employee_monitor_usage" if self.db.text(allocation.get("type")) == "monitor" else "employee_non_asset_usage"
         usage_pk = "monitor_usage_id" if usage_table == "employee_monitor_usage" else "non_asset_usage_id"
+        movement_baseline = self.db.scalar(
+            "SELECT COALESCE(MAX(movement_log_id), 0) FROM inventory_movement_log;"
+        )
         output = self.db.execute(
             f"""
             START TRANSACTION;
@@ -2456,15 +2460,23 @@ class AssetService:
             FROM inventory_allocation_history
             WHERE allocation_id = {allocation_id_int} AND status = 'active'
             FOR UPDATE;
+            {self._recovery_catalog_sql(
+                type_id_sql=str(self.db.integer(allocation.get('typeId'), 0)),
+                brand_id_sql=str(self.db.integer(allocation.get('usageBrandId'), 0)),
+                brand_name=allocation.get('brandName'),
+                model_name=allocation.get('modelName'),
+                model_id_sql=str(self.db.integer(allocation.get('modelId'), 0)),
+                condition='@return_allowed = 1',
+            )}
             INSERT INTO inventory_warehouse_stock (warehouse_id, model_id, quantity)
-            SELECT {target_warehouse_id}, {self.db.integer(allocation.get('modelId'), 0)}, 0
+            SELECT {target_warehouse_id}, @recovery_model_id, 0
             FROM DUAL
-            WHERE {1 if stock_adjusted else 0} = 1
+            WHERE @recovery_model_id > 0
             ON DUPLICATE KEY UPDATE quantity = inventory_warehouse_stock.quantity;
             SELECT quantity
             FROM inventory_warehouse_stock
             WHERE warehouse_id = {target_warehouse_id}
-              AND model_id = {self.db.integer(allocation.get('modelId'), 0)}
+              AND model_id = @recovery_model_id
             FOR UPDATE;
             UPDATE inventory_allocation_history
             SET status = 'returned',
@@ -2490,31 +2502,43 @@ class AssetService:
               AND @returned_count = 1;
             UPDATE it_inventory_model
             SET quantity = quantity + {quantity}
-            WHERE model_id = {self.db.integer(allocation.get('modelId'), 0)}
+            WHERE model_id = @recovery_model_id
               AND @returned_count = 1
-              AND {1 if stock_adjusted else 0} = 1;
+              AND @recovery_model_id > 0;
             UPDATE inventory_warehouse_stock
             SET quantity = quantity + {quantity}
             WHERE warehouse_id = {target_warehouse_id}
-              AND model_id = {self.db.integer(allocation.get('modelId'), 0)}
+              AND model_id = @recovery_model_id
               AND @returned_count = 1
-              AND {1 if stock_adjusted else 0} = 1;
+              AND @recovery_model_id > 0;
             INSERT INTO inventory_movement_log (
               movement_direction, type_name, brand_name, model_name, quantity,
               source_label, source_warehouse_id, target_label, target_warehouse_id,
               note, related_employee_no, related_employee_name, trigger_action
             )
             SELECT
-              'increase', {self.db.quote(self.db.text(allocation.get('typeName')))},
-              {self.db.quote(self.db.text(allocation.get('brandName')))},
-              {self.db.quote(self.db.text(allocation.get('modelName')))}, {quantity},
+              'increase',
+              COALESCE(
+                (SELECT type_name FROM non_asset_type WHERE non_asset_type_id = (
+                   SELECT non_asset_type_id FROM it_inventory_model WHERE model_id = @recovery_model_id)),
+                {self.db.quote(self.db.text(allocation.get('typeName')))}
+              ),
+              COALESCE(
+                (SELECT brand_name FROM it_inventory_brand WHERE brand_id = (
+                   SELECT brand_id FROM it_inventory_model WHERE model_id = @recovery_model_id)),
+                {self.db.quote(self.db.text(allocation.get('brandName')))}
+              ),
+              COALESCE(
+                (SELECT model_name FROM it_inventory_model WHERE model_id = @recovery_model_id),
+                {self.db.quote(self.db.text(allocation.get('modelName')))}
+              ), {quantity},
               {self.db.quote(self.db.text(allocation.get('employeeName')))}, NULL,
               {self.db.quote(self.db.text((target_warehouse or {}).get('name')))}, {target_warehouse_id_sql},
               {self.db.quote(self.db.text(payload.get('notes')))},
               {self.db.quote(self.db.text(allocation.get('employeeNo')))},
               {self.db.quote(self.db.text(allocation.get('employeeName')))}, 'inventory_return'
             FROM DUAL
-            WHERE @returned_count = 1 AND {1 if stock_adjusted else 0} = 1;
+            WHERE @returned_count = 1 AND @recovery_model_id > 0;
             {self._conditional_audit_sql(
                 'inventory_returned',
                 'inventory_allocation',
@@ -2540,8 +2564,9 @@ class AssetService:
             raise self.conflict_error("This inventory allocation has already been returned.")
         response = {
             "allocationId": str(allocation_id_int),
-            "warehouseId": str(target_warehouse_id) if stock_adjusted else "",
+            "warehouseId": str(target_warehouse_id),
             "status": "returned",
+            "recoveryRecords": self._recovery_records_since(movement_baseline, ("inventory_return",)),
         }
         self._store_idempotency_result("inventory.return", idempotency_key, payload, response)
         return response
@@ -2599,6 +2624,7 @@ class AssetService:
               'employeeId', usage_row.employee_id,
               'typeId', COALESCE(usage_row.non_asset_type_id, 0),
               'modelId', COALESCE(usage_row.inventory_model_id, 0),
+              'brandId', COALESCE(usage_row.inventory_brand_id, 0),
               'quantity', usage_row.quantity,
               'stockAdjusted', usage_row.stock_adjusted,
               'typeName', COALESCE(type_row.type_name, ''),
@@ -2624,22 +2650,18 @@ class AssetService:
         type_id = self.db.integer(usage.get("typeId"), 0)
         if quantity <= 0:
             raise self.conflict_error("Inventory usage has no quantity left to return.")
-        if stock_adjusted and model_id <= 0:
-            raise self.conflict_error(
-                "This legacy usage has no linked inventory model. Reconcile its catalog link before returning it."
-            )
-        target_warehouse = None
-        if stock_adjusted:
-            target_warehouse = self._resolve_warehouse(
-                payload,
-                context,
-                "inventory_operations",
-                preferred_org_id=self._actor_org_id(context),
-            )
-        elif self.db.integer(payload.get("warehouseId"), 0) > 0:
-            raise self.api_error("Inventory registered without stock deduction cannot be returned to a warehouse.")
-        target_warehouse_id = self.db.integer((target_warehouse or {}).get("id"), 0)
-        target_warehouse_id_sql = str(target_warehouse_id) if target_warehouse_id > 0 else "NULL"
+        # 回收统一入库：未扣减库存的登记物资在回收时同样进库存，
+        # 缺少库存型号时按品牌型号自动补齐目录。
+        target_warehouse = self._resolve_warehouse(
+            payload,
+            context,
+            "inventory_operations",
+            preferred_org_id=self._actor_org_id(context),
+        )
+        target_warehouse_id = self.db.integer(target_warehouse.get("id"), 0)
+        if target_warehouse_id <= 0:
+            raise self.conflict_error("请选择回收目标仓库。")
+        target_warehouse_id_sql = str(target_warehouse_id)
 
         existing_allocation_id = self.db.scalar(
             f"""
@@ -2661,6 +2683,9 @@ class AssetService:
         note = self.db.text(payload.get("notes"))[:420]
         reconciliation_note = f"Legacy usage reconciled during return. {note}".strip()
 
+        movement_baseline = self.db.scalar(
+            "SELECT COALESCE(MAX(movement_log_id), 0) FROM inventory_movement_log;"
+        )
         output = self.db.execute(
             f"""
             START TRANSACTION;
@@ -2695,10 +2720,18 @@ class AssetService:
                   AND is_active = 1
               )
             );
+            {self._recovery_catalog_sql(
+                type_id_sql=str(self.db.integer(usage.get('typeId'), 0)),
+                brand_id_sql=str(self.db.integer(usage.get('brandId'), 0)),
+                brand_name=usage.get('brandName'),
+                model_name=usage.get('modelName'),
+                model_id_sql='@usage_model_id',
+                condition='@active_allocation_id = 0',
+            )}
+            SET @usage_model_id = @recovery_model_id;
             SET @return_allowed = IF(
               @usage_quantity > 0
-              AND (@usage_stock_adjusted = 0 OR @usage_model_id > 0)
-              AND @usage_model_ready = 1
+              AND @recovery_model_id > 0
               AND @active_allocation_id = 0,
               1,
               0
@@ -2706,7 +2739,7 @@ class AssetService:
             INSERT INTO inventory_warehouse_stock (warehouse_id, model_id, quantity)
             SELECT {target_warehouse_id}, @usage_model_id, 0
             FROM DUAL
-            WHERE @usage_stock_adjusted = 1
+            WHERE @recovery_model_id > 0
             ON DUPLICATE KEY UPDATE quantity = inventory_warehouse_stock.quantity;
             SELECT quantity
             FROM inventory_warehouse_stock
@@ -2734,13 +2767,13 @@ class AssetService:
             UPDATE it_inventory_model
             SET quantity = quantity + @usage_quantity
             WHERE model_id = @usage_model_id
-              AND @usage_stock_adjusted = 1
+              AND @recovery_model_id > 0
               AND @return_allowed = 1;
             UPDATE inventory_warehouse_stock
             SET quantity = quantity + @usage_quantity
             WHERE warehouse_id = {target_warehouse_id}
               AND model_id = @usage_model_id
-              AND @usage_stock_adjusted = 1
+              AND @recovery_model_id > 0
               AND @return_allowed = 1;
             INSERT INTO inventory_movement_log (
               movement_direction, type_name, brand_name, model_name, quantity,
@@ -2748,14 +2781,27 @@ class AssetService:
               note, related_employee_no, related_employee_name, trigger_action
             )
             SELECT
-              'increase', {self.db.quote(self.db.text(usage.get('typeName')))},
-              {self.db.quote(self.db.text(usage.get('brandName')))}, {self.db.quote(self.db.text(usage.get('modelName')))},
+              'increase',
+              COALESCE(
+                (SELECT type_name FROM non_asset_type WHERE non_asset_type_id = (
+                   SELECT non_asset_type_id FROM it_inventory_model WHERE model_id = @recovery_model_id)),
+                {self.db.quote(self.db.text(usage.get('typeName')))}
+              ),
+              COALESCE(
+                (SELECT brand_name FROM it_inventory_brand WHERE brand_id = (
+                   SELECT brand_id FROM it_inventory_model WHERE model_id = @recovery_model_id)),
+                {self.db.quote(self.db.text(usage.get('brandName')))}
+              ),
+              COALESCE(
+                (SELECT model_name FROM it_inventory_model WHERE model_id = @recovery_model_id),
+                {self.db.quote(self.db.text(usage.get('modelName')))}
+              ),
               @usage_quantity, {self.db.quote(self.db.text(employee.get('name')))}, NULL,
               {self.db.quote(self.db.text((target_warehouse or {}).get('name')))}, {target_warehouse_id_sql},
               {self.db.quote(reconciliation_note)}, {self.db.quote(self.db.text(employee.get('employeeNo')))},
               {self.db.quote(self.db.text(employee.get('name')))}, 'inventory_return'
             FROM DUAL
-            WHERE @return_allowed = 1 AND @usage_stock_adjusted = 1;
+            WHERE @return_allowed = 1 AND @recovery_model_id > 0;
             {self._conditional_audit_sql(
                 'inventory_returned',
                 'inventory_allocation',
@@ -2786,7 +2832,8 @@ class AssetService:
             "allocationId": str(allocation_id),
             "status": "returned",
             "legacyUsageReconciled": True,
-            "warehouseId": str(target_warehouse_id) if stock_adjusted else "",
+            "warehouseId": str(target_warehouse_id),
+            "recoveryRecords": self._recovery_records_since(movement_baseline, ("inventory_return",)),
         }
         self._store_idempotency_result("inventory.usage-return", idempotency_key, payload, response)
         return response
@@ -3465,6 +3512,108 @@ class AssetService:
                     raise self.forbidden_error("当前账号无权访问该报废记录。")
                 return row
         raise self.api_error("报废记录不存在。")
+
+    def _recovery_catalog_sql(
+        self,
+        *,
+        type_id_sql: str,
+        brand_id_sql: str,
+        brand_name: object,
+        model_name: object,
+        condition: str,
+        model_id_sql: str = "0",
+    ) -> str:
+        """Resolve (and create when missing) the catalog model used by a recovery.
+
+        Every recovered item must end up with a stock row, even when it was
+        registered without stock deduction or has no brand/model in the
+        catalog yet. The statement block sets ``@recovery_model_id``,
+        ``@recovery_brand_id``, ``@recovery_type_id`` and
+        ``@recovery_model_created`` for the following stock statements.
+        """
+        brand_value = self.db.quote(self.db.text(brand_name).strip() or "未填写品牌")
+        model_value = self.db.quote(self.db.text(model_name).strip() or "未填写型号")
+        return f"""
+            SET @recovery_model_id = {model_id_sql};
+            SET @recovery_type_id = {type_id_sql};
+            SET @recovery_brand_id = {brand_id_sql};
+            SET @recovery_ready = IF(
+              @recovery_model_id > 0,
+              1,
+              IF(@recovery_type_id > 0, 1, 0)
+            );
+            SET @recovery_brand_id = IF(
+              @recovery_model_id > 0,
+              (SELECT brand_id FROM it_inventory_model WHERE model_id = @recovery_model_id),
+              @recovery_brand_id
+            );
+            SET @recovery_brand_id = IFNULL(@recovery_brand_id, 0);
+            SET @recovery_brand_id = IF(
+              @recovery_brand_id > 0 OR @recovery_ready = 0,
+              @recovery_brand_id,
+              (SELECT brand_id FROM it_inventory_brand
+               WHERE non_asset_type_id = @recovery_type_id
+                 AND brand_name = {brand_value}
+               ORDER BY is_active DESC, brand_id
+               LIMIT 1)
+            );
+            SET @recovery_brand_id = IFNULL(@recovery_brand_id, 0);
+            INSERT IGNORE INTO it_inventory_brand (non_asset_type_id, brand_name, is_active)
+            SELECT @recovery_type_id, {brand_value}, 1
+            FROM DUAL
+            WHERE @recovery_ready = 1
+              AND @recovery_brand_id = 0
+              AND {condition};
+            SET @recovery_brand_id = IF(
+              @recovery_brand_id = 0 AND @recovery_ready = 1,
+              (SELECT brand_id FROM it_inventory_brand
+               WHERE non_asset_type_id = @recovery_type_id
+                 AND brand_name = {brand_value}
+               ORDER BY brand_id
+               LIMIT 1),
+              @recovery_brand_id
+            );
+            SET @recovery_brand_id = IFNULL(@recovery_brand_id, 0);
+            SET @recovery_model_id = IF(
+              @recovery_model_id > 0 OR @recovery_ready = 0,
+              @recovery_model_id,
+              (SELECT model_id FROM it_inventory_model
+               WHERE brand_id = @recovery_brand_id
+                 AND model_name = {model_value}
+                 AND is_active = 1
+               ORDER BY model_id
+               LIMIT 1)
+            );
+            SET @recovery_model_created = IF(
+              @recovery_model_id IS NULL OR @recovery_model_id = 0,
+              1,
+              0
+            );
+            INSERT IGNORE INTO it_inventory_model (
+              non_asset_type_id, brand_id, model_name, batch_key, quantity, inbound_date, is_active
+            )
+            SELECT @recovery_type_id, @recovery_brand_id, {model_value}, '', 0, CURRENT_DATE, 1
+            FROM DUAL
+            WHERE @recovery_ready = 1
+              AND @recovery_brand_id > 0
+              AND @recovery_model_created = 1
+              AND {condition};
+            SET @recovery_model_id = IF(
+              @recovery_model_created = 1 AND @recovery_brand_id > 0,
+              (SELECT model_id FROM it_inventory_model
+               WHERE brand_id = @recovery_brand_id
+                 AND model_name = {model_value}
+               ORDER BY model_id
+               LIMIT 1),
+              @recovery_model_id
+            );
+            SET @recovery_model_id = IFNULL(@recovery_model_id, 0);
+            SET @recovery_model_created = IF(
+              @recovery_model_created = 1 AND @recovery_model_id > 0,
+              1,
+              0
+            );
+        """
 
     def list_allocations(self, context: dict, active_only: bool = True) -> list[dict]:
         where = "WHERE allocation.status = 'active'" if active_only else ""
@@ -4489,6 +4638,16 @@ class AssetService:
                 """
             )
             if action == "recover":
+                statements.append(
+                    self._recovery_catalog_sql(
+                        type_id_sql=str(self.db.integer(item.get("typeId"), 0)),
+                        brand_id_sql=str(self.db.integer(item.get("brandId"), 0)),
+                        brand_name=brand_name,
+                        model_name=model_name,
+                        model_id_sql=str(model_id),
+                        condition="@offboard_allowed = 1",
+                    )
+                )
                 statements.extend(
                     [
                         f"""
@@ -4504,7 +4663,7 @@ class AssetService:
                         """,
                         f"""
                         SET @recovery_quantity = IF(
-                          @active_allocation_count = 0 AND {stock_adjusted} = 1,
+                          @allocation_recovery_quantity = 0,
                           {quantity},
                           @allocation_recovery_quantity
                         )
@@ -4530,10 +4689,10 @@ class AssetService:
                         """,
                         f"""
                         INSERT INTO inventory_warehouse_stock (warehouse_id, model_id, quantity)
-                        SELECT {recovery_warehouse_id_sql}, {model_id}, {quantity}
+                        SELECT {recovery_warehouse_id_sql}, @recovery_model_id, {quantity}
                         FROM DUAL
-                        WHERE @active_allocation_count = 0
-                          AND {stock_adjusted} = 1
+                        WHERE @allocation_recovery_quantity = 0
+                          AND @recovery_model_id > 0
                           AND @offboard_allowed = 1
                         ON DUPLICATE KEY UPDATE
                           quantity = quantity + VALUES(quantity)
@@ -4560,9 +4719,9 @@ class AssetService:
                         f"""
                         UPDATE it_inventory_model
                         SET quantity = quantity + {quantity}
-                        WHERE model_id = {model_id}
-                          AND @active_allocation_count = 0
-                          AND {stock_adjusted} = 1
+                        WHERE model_id = @recovery_model_id
+                          AND @allocation_recovery_quantity = 0
+                          AND @recovery_model_id > 0
                           AND @offboard_allowed = 1
                         """,
                         f"""
@@ -4613,9 +4772,9 @@ class AssetService:
                         )
                         SELECT
                           'increase',
-                          {self.db.quote(type_name)},
-                          {self.db.quote(brand_name)},
-                          {self.db.quote(model_name)},
+                          COALESCE(type_row.type_name, {self.db.quote(type_name)}),
+                          COALESCE(brand.brand_name, {self.db.quote(brand_name)}),
+                          COALESCE(model.model_name, {self.db.quote(model_name)}),
                           @recovery_quantity,
                           {self.db.quote(employee_label)},
                           NULL,
@@ -4626,9 +4785,15 @@ class AssetService:
                           {self.db.quote(employee_name)},
                           'leave_recovery'
                         FROM inventory_warehouse warehouse
+                        LEFT JOIN it_inventory_model model
+                          ON model.model_id = @recovery_model_id
+                        LEFT JOIN it_inventory_brand brand
+                          ON brand.brand_id = model.brand_id
+                        LEFT JOIN non_asset_type type_row
+                          ON type_row.non_asset_type_id = model.non_asset_type_id
                         WHERE warehouse.warehouse_id = {recovery_warehouse_id_sql}
-                          AND @active_allocation_count = 0
-                          AND {stock_adjusted} = 1
+                          AND @allocation_recovery_quantity = 0
+                          AND @recovery_model_id > 0
                           AND @offboard_allowed = 1
                         """,
                     ]
@@ -4770,6 +4935,9 @@ class AssetService:
                 "COMMIT",
             ]
         )
+        movement_baseline = self.db.scalar(
+            "SELECT COALESCE(MAX(movement_log_id), 0) FROM inventory_movement_log;"
+        )
         output = self.db.execute(";\n".join(statements) + ";")
         lines = [line.strip() for line in output.splitlines() if line.strip()]
         result = (lines[-1] if lines else "").split("\t")
@@ -4786,9 +4954,75 @@ class AssetService:
             "status": "left",
             "processedItems": processed_items,
             "unboundAccounts": unbound_accounts,
+            "recoveryRecords": self._recovery_records_since(movement_baseline, ("leave_recovery",)),
+            "unrecoveredItems": self._offboarding_unrecovered_items(plan),
         }
         self._store_idempotency_result("employee.offboard", idempotency_key, payload, response)
         return response
+
+    def _recovery_records_since(
+        self,
+        movement_baseline: object,
+        triggers: tuple[str, ...] = ("leave_recovery",),
+    ) -> list[dict]:
+        """Return the stock-recovery records written after a movement baseline."""
+        trigger_sql = ", ".join(self.db.quote(trigger) for trigger in triggers)
+        rows = self.db.json(
+            f"""
+            SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(
+              'movementLogId', CAST(movement_log_id AS CHAR),
+              'typeName', type_name,
+              'brandName', brand_name,
+              'modelName', model_name,
+              'quantity', quantity,
+              'warehouseId', COALESCE(CAST(target_warehouse_id AS CHAR), ''),
+              'warehouseName', target_label,
+              'note', note,
+              'triggerAction', trigger_action,
+              'occurredAt', DATE_FORMAT(occurred_at, '%Y-%m-%d %H:%i:%s')
+            )), JSON_ARRAY())
+            FROM (
+              SELECT movement_log_id, type_name, brand_name, model_name, quantity,
+                     target_warehouse_id, target_label, note, trigger_action, occurred_at
+              FROM inventory_movement_log
+              WHERE movement_log_id > {self.db.integer(movement_baseline, 0)}
+                AND trigger_action IN ({trigger_sql})
+              ORDER BY movement_log_id
+            ) AS ordered_recovery_records
+            """,
+            [],
+        )
+        return [dict(row) for row in (rows or [])]
+
+    def _offboarding_unrecovered_items(self, plan: list[dict]) -> list[dict]:
+        """Describe items that were not recovered into stock and why."""
+        items: list[dict] = []
+        for item in plan or []:
+            action = self.db.text(item.get("action"))
+            if action == "recover":
+                continue
+            target_name = self.db.text(item.get("targetEmployeeName"))
+            note = self.db.text(item.get("note"))
+            if action == "transfer":
+                reason = f"已转交给 {target_name}" if target_name else "已转交他人"
+            elif action == "exception":
+                reason = f"异常待处理：{note}" if note else "异常待处理"
+            else:
+                reason = "未选择回收"
+            items.append(
+                {
+                    "itemType": self.db.text(item.get("itemType")),
+                    "label": self.db.text(item.get("label")),
+                    "detail": self.db.text(item.get("detail")),
+                    "quantity": self.db.integer(item.get("quantity"), 1),
+                    "action": action,
+                    "actionLabel": self.db.text(item.get("actionLabel")),
+                    "targetEmployeeName": target_name,
+                    "note": note,
+                    "reason": reason,
+                }
+            )
+        return items
 
     def add_relation(self, payload: dict, context: dict) -> dict:
         source_type = self.db.text(payload.get("sourceType"))

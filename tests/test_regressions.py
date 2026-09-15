@@ -1045,7 +1045,10 @@ class InventoryRecoveryRegressionTests(TestCase):
         self.assertIn("inventory_model_id <=> {group_model_id_sql}", offboard_source)
         self.assertIn("GROUP BY allocation.inventory_model_id", offboard_source)
         self.assertIn("allocation.stock_adjusted = 1", offboard_source)
-        self.assertIn("AND {stock_adjusted} = 1", offboard_source)
+        # 登记物资（未扣库存）现在同样回收入库，缺少型号时自动补齐目录。
+        self.assertIn("@allocation_recovery_quantity = 0", offboard_source)
+        self.assertIn("AND @recovery_model_id > 0", offboard_source)
+        self.assertIn("_recovery_catalog_sql", offboard_source)
         self.assertNotIn("显示屏品牌型号重复", server_source := (ROOT / "server.py").read_text(encoding="utf-8"))
         self.assertNotIn("非资产设备品牌型号重复", server_source)
 
@@ -1211,7 +1214,7 @@ class InventoryRecoveryRegressionTests(TestCase):
         service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
 
         self.assertIn("/api/inventory/usage/${encodeURIComponent(allocationType)}/", app)
-        self.assertIn("if (matches.length) return matches.length;", app)
+        self.assertIn("if (matches.length) return recoveryRecords;", app)
         self.assertIn('if path.startswith("/api/inventory/usage/")', router)
         self.assertIn("len(parts) != 7", router)
         self.assertIn("def return_usage_inventory(", service)
@@ -1384,6 +1387,60 @@ class UpdateSourceSelectionTests(TestCase):
         self.assertIn('payload.get("persistRepositoryUrl", True)', server_source)
         self.assertIn("if \"repositoryUrl\" in payload and parse_bool(", server_source)
         self.assertIn("updateCustomRepositoryUrl", app)
+
+
+class RecoveryInboundTests(TestCase):
+    """登记物资回收也必须入库，缺少品牌型号时自动建档并输出记录。"""
+
+    def test_recovery_creates_catalog_entries_and_always_adds_stock(self):
+        service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+        offboard = service.split("    def offboard_employee(", 1)[1].split(
+            "\n    def _recovery_records_since(",
+            1,
+        )[0]
+
+        self.assertIn("def _recovery_catalog_sql(", service)
+        self.assertIn("INSERT IGNORE INTO it_inventory_brand", service)
+        self.assertIn("INSERT IGNORE INTO it_inventory_model", service)
+        self.assertIn("未填写品牌", service)
+        self.assertIn("未填写型号", service)
+        # 登记物资（未扣库存）同样入库，不再以 stock_adjusted 作为入库条件
+        self.assertIn("@allocation_recovery_quantity = 0", offboard)
+        self.assertIn("AND @recovery_model_id > 0", offboard)
+        self.assertNotIn("AND {stock_adjusted} = 1", offboard)
+        self.assertIn("'leave_recovery'", offboard)
+
+    def test_single_returns_recover_into_stock_as_well(self):
+        service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+        allocation_return = service.split("    def return_inventory(", 1)[1].split(
+            "\n    def return_usage_inventory(",
+            1,
+        )[0]
+        legacy_return = service.split("    def return_usage_inventory(", 1)[1].split(
+            "\n    def list_allocations(",
+            1,
+        )[0]
+
+        for source in (allocation_return, legacy_return):
+            self.assertIn("_recovery_catalog_sql(", source)
+            self.assertIn("@recovery_model_id > 0", source)
+            self.assertNotIn("{1 if stock_adjusted else 0} = 1", source)
+            self.assertIn("请选择回收目标仓库。", source)
+
+    def test_recovery_records_are_returned_and_shown_in_a_modal(self):
+        service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+        app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("def _recovery_records_since(", service)
+        self.assertIn("def _offboarding_unrecovered_items(", service)
+        self.assertIn('"recoveryRecords"', service)
+        self.assertIn('"unrecoveredItems"', service)
+        self.assertIn("function showRecoveryResultModal(result = {})", app)
+        self.assertIn("回收完成", app)
+        self.assertIn("已回收并生成库存记录", app)
+        self.assertIn("未回收物资", app)
+        self.assertIn("showRecoveryResultModal({", app)
+        self.assertIn('if (matches.length) return recoveryRecords;', app)
 
 
 class OffboardingRecoveryWarehouseTests(TestCase):

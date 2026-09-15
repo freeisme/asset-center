@@ -1005,24 +1005,26 @@ async function returnUsageAllocations(employeeId, allocationType, usageRecordId,
       item.allocationType === allocationType &&
       String(item.usageRecordId || "") === String(usageRecordId || ""),
   );
+  const recoveryRecords = [];
   for (const allocation of matches) {
-    await runCommand(
+    const payload = await runCommand(
       `/api/inventory/allocations/${encodeURIComponent(allocation.id)}/return`,
       { notes, warehouseId: String(warehouseId || "") },
       "inventory-return",
     );
+    recoveryRecords.push(...(payload.recoveryRecords || []));
   }
-  if (matches.length) return matches.length;
+  if (matches.length) return recoveryRecords;
 
   // Older usage rows predate allocation history. Return them through the
   // transactional compatibility command instead of treating a valid row as
   // an unchecked selection.
-  await runCommand(
+  const legacyPayload = await runCommand(
     `/api/inventory/usage/${encodeURIComponent(allocationType)}/${encodeURIComponent(usageRecordId)}/return`,
     { employeeId: String(employeeId || ""), notes, warehouseId: String(warehouseId || "") },
     "inventory-usage-return",
   );
-  return 1;
+  return legacyPayload.recoveryRecords || [];
 }
 
 async function requestDownload(url, body = {}) {
@@ -3104,6 +3106,7 @@ async function confirmDeviceRecovery() {
     return;
   }
   let remainingDevices = [...pending.devices];
+  const recoveryRecords = [];
   try {
     for (let index = 0; index < pending.devices.length; index += 1) {
       const device = pending.devices[index];
@@ -3117,6 +3120,7 @@ async function confirmDeviceRecovery() {
       if (!returned) {
         throw new Error("This usage record has no tracked allocation. Reconcile it before returning.");
       }
+      recoveryRecords.push(...(Array.isArray(returned) ? returned : []));
       remainingDevices = pending.devices.slice(index + 1);
     }
     await reloadDomainState();
@@ -3134,7 +3138,11 @@ async function confirmDeviceRecovery() {
   }
   closeModal();
   openDeviceManager(employee.id);
-  showToast(`已回收 ${pending.devices.length} 条物资并入库`);
+  showRecoveryResultModal({
+    recoveryRecords,
+    unrecoveredItems: [],
+    subtitle: `${employee.name} · 设备清单，已回收 ${pending.devices.length} 项`,
+  });
 }
 
 function offboardActionOptions(selected = "recover") {
@@ -3248,6 +3256,63 @@ function refreshOffboardItemRows(root = document) {
   root.querySelectorAll("[data-offboard-item-row]").forEach((row) => updateOffboardItemRow(row));
 }
 
+function recoveryRecordLabel(record) {
+  const name = [record.brandName, record.modelName].filter(Boolean).join(" ") || record.typeName || "";
+  return [record.typeName, name].filter(Boolean).join(" · ") || "物资";
+}
+
+function showRecoveryResultModal(result = {}) {
+  const records = Array.isArray(result.recoveryRecords) ? result.recoveryRecords : [];
+  const unrecovered = Array.isArray(result.unrecoveredItems) ? result.unrecoveredItems : [];
+  const subtitle = String(result.subtitle || "").trim();
+  openModal(
+    `${modalHeader(
+      "回收完成",
+      subtitle || `已回收入库 ${records.length} 项，未回收 ${unrecovered.length} 项`,
+    )}
+      <section class="modal-section">
+        <div class="modal-section-title"><div><h3>已回收并生成库存记录</h3><span>共 ${records.length} 项</span></div></div>
+        ${
+          records.length
+            ? `<div class="recovery-list">${records
+                .map(
+                  (record) => `
+            <div class="recovery-row">
+              <span><strong>${escapeHtml(recoveryRecordLabel(record))}</strong><small>${escapeHtml(
+                `${Number(record.quantity || 0) || 1} 件 · 入库仓库：${record.warehouseName || "—"} · 流转记录 #${
+                  record.movementLogId || "-"
+                }`,
+              )}</small></span>
+            </div>`,
+                )
+                .join("")}</div>`
+            : '<div class="empty-state">本次没有产生库存回收记录。</div>'
+        }
+      </section>
+      ${
+        unrecovered.length
+          ? `<section class="modal-section">
+        <div class="modal-section-title"><div><h3>未回收物资</h3><span>共 ${unrecovered.length} 项</span></div></div>
+        <div class="recovery-list">${unrecovered
+          .map(
+            (item) => `
+            <div class="recovery-row">
+              <span><strong>${escapeHtml(
+                [item.label, item.detail].filter(Boolean).join(" · ") || "未命名物资",
+              )}</strong><small>${escapeHtml(
+                `${Number(item.quantity || 0) || 1} 件 · ${item.reason || "未说明原因"}`,
+              )}</small></span>
+            </div>`,
+          )
+          .join("")}</div>
+      </section>`
+          : ""
+      }
+      <div class="modal-footer"><button type="button" class="primary-button" data-action="close-modal">知道了</button></div>`,
+    true,
+  );
+}
+
 function openEmployeeOffboardModal(employeeId) {
   const employee = getEmployee(employeeId);
   if (!employee) return;
@@ -3354,7 +3419,13 @@ async function handleEmployeeOffboardSubmit(form) {
       settingsState.users = Array.isArray(usersPayload.users) ? usersPayload.users : [];
     }
     render();
-    showToast(`离职办理完成，处理 ${result.processedItems || items.length} 项，解绑账号 ${result.unboundAccounts || 0} 个。`);
+    showRecoveryResultModal({
+      recoveryRecords: result.recoveryRecords || [],
+      unrecoveredItems: result.unrecoveredItems || [],
+      subtitle: `离职办理完成，处理 ${result.processedItems || items.length} 项，解绑账号 ${
+        result.unboundAccounts || 0
+      } 个`,
+    });
   } catch (error) {
     showToast(`办理离职失败：${error.message}`, true);
   } finally {

@@ -197,6 +197,7 @@ def start_server() -> "subprocess.Popen[str]":
             "MYSQLDUMP_BIN": os.environ.get("MYSQLDUMP_BIN", "mysqldump"),
             "SERVER_HOST": "127.0.0.1",
             "SERVER_PORT": str(SERVER_PORT),
+            "PYTHONUNBUFFERED": "1",
         }
     )
     process = subprocess.Popen(
@@ -448,12 +449,26 @@ def main() -> int:
         )
         == warehouse_b
     ), "未扣库存的物资也要记录回收仓库"
+    # 登记物资（未扣库存）现在同样回收入库，因此会产生第二条离职回收流转记录。
     assert (
         sql_scalar(
             f"SELECT COUNT(*) FROM inventory_movement_log WHERE trigger_action = 'leave_recovery' AND target_warehouse_id = {warehouse_b};"
         )
-        == "1"
+        == "2"
+    ), "显示屏与登记物资都应产生离职回收流转记录"
+    assert len(result.get("recoveryRecords") or []) == 2, result.get("recoveryRecords")
+    new_model_id = sql_scalar(
+        "SELECT model_id FROM it_inventory_model WHERE model_name = '"
+        f"{PREFIX}定制物资' ORDER BY model_id DESC LIMIT 1;"
     )
+    assert new_model_id, "缺少品牌型号的登记物资应自动创建库存型号"
+    assert sql_scalar(f"SELECT quantity FROM it_inventory_model WHERE model_id = {new_model_id};") == "2"
+    assert (
+        sql_scalar(
+            f"SELECT quantity FROM inventory_warehouse_stock WHERE warehouse_id = {warehouse_b} AND model_id = {new_model_id};"
+        )
+        == "2"
+    ), "自动创建的型号必须回收到指定仓库"
     snapshot = sql_scalar(
         f"SELECT CAST(device_snapshot AS CHAR) FROM left_employee_archive WHERE employee_no = '{PREFIX.upper()}-EMP-{suffix}' ORDER BY archive_id DESC LIMIT 1;"
     )
