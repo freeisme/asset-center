@@ -1,0 +1,44 @@
+name: Verify source
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-verification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify source
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile Python source
+        run: python -m compileall -q server.py office_asset tools tests migration_runner.py run_mysql_utf8.py qa_security_regression.py
+
+      - name: Run regression tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Scan for sensitive content
+        run: python tools/scan_release_safety.py --rev HEAD
+
+      - name: Check shell scripts
+        run: bash -n deploy/scripts/*.sh deploy/docker/*.sh
+
+      - name: Check JavaScript syntax
+        run: node --check web/app.js

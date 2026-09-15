@@ -1,0 +1,2 @@
+# The application uses Python standard library only.
+# Recommended runtime: Python 3.10 or newer.

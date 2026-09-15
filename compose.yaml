@@ -1,0 +1,94 @@
+services:
+  db:
+    image: mysql:8.4
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-office_asset_mgmt}
+      MYSQL_USER: ${DB_USER:-office_asset_app}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./database/bootstrap:/seed/bootstrap:ro
+      - ./deploy/docker/init_database.sh:/docker-entrypoint-initdb.d/00_init_database.sh:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql --protocol=TCP -h 127.0.0.1 -u\"$$MYSQL_USER\" \"$$MYSQL_DATABASE\" -e 'SELECT 1 FROM app_state_revision LIMIT 1' > /dev/null 2>&1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    environment:
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_NAME: ${DB_NAME:-office_asset_mgmt}
+      DB_USER: ${DB_USER:-office_asset_app}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      MYSQL_BIN: /usr/bin/mysql
+      MIGRATION_ADOPT_BASELINE: ${MIGRATION_ADOPT_BASELINE:-}
+    command: ["python", "tools/migration_runner.py", "--database", "${DB_NAME:-office_asset_mgmt}"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_NAME: ${DB_NAME:-office_asset_mgmt}
+      DB_USER: ${DB_USER:-office_asset_app}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      MYSQL_BIN: /usr/bin/mysql
+      MYSQLDUMP_BIN: /usr/bin/mysqldump
+      BACKUP_DIR: /app/backups
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: "8000"
+      AUTH_SESSION_HOURS: ${AUTH_SESSION_HOURS:-8}
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-true}
+      MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:-8388608}
+      UPDATE_SERVICE_URL: ${UPDATE_SERVICE_URL:-https://host.docker.internal:9000}
+      UPDATE_CONTROL_TOKEN: ${UPDATE_CONTROL_TOKEN:-}
+      UPDATE_SERVICE_CA_FILE: ${UPDATE_SERVICE_CA_FILE:-}
+      UPDATE_SERVICE_ALLOW_HTTP: ${UPDATE_SERVICE_ALLOW_HTTP:-false}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - backup-data:/app/backups
+      - ${UPDATE_SERVICE_CERTS_DIR:-./secrets/update-service}:/run/office-asset-mgmt/update-service:ro
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).read()",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  mysql-data:
+  backup-data:

@@ -1,0 +1,24 @@
+[Unit]
+Description=Office Asset Management Gitea webhook and manual deployment service
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=officeasset-deploy
+SupplementaryGroups=docker
+WorkingDirectory=/opt/office-asset-mgmt
+EnvironmentFile=/etc/office-asset-mgmt/gitea-webhook.env
+Environment=DOCKER_CONFIG=/tmp/officeasset-deploy-docker
+ExecStart=/usr/bin/python3 /opt/office-asset-mgmt/deploy/gitea/deploy_webhook.py
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/office-asset-mgmt
+
+[Install]
+WantedBy=multi-user.target

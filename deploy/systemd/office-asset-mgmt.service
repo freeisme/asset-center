@@ -1,0 +1,20 @@
+[Unit]
+Description=Office Asset Management Web Service
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+Type=simple
+User=officeasset
+Group=officeasset
+WorkingDirectory=/opt/office-asset-mgmt
+EnvironmentFile=/etc/office-asset-mgmt/office-asset-mgmt.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/office-asset-mgmt/server.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
