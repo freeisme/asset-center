@@ -37,6 +37,11 @@ const UPDATE_RELEASE_CHANNELS = {
   beta: "Beta 版",
 };
 const DEFAULT_UPDATE_RELEASE_CHANNEL = "beta";
+const GITHUB_UPDATE_REPOSITORY_URL = "https://github.com/freeisme/asset-center.git";
+const UPDATE_SOURCES = {
+  github: "GitHub 官方更新",
+  custom: "自定义更新地址",
+};
 
 function applyTheme(theme) {
   const isDark = theme === "dark";
@@ -248,6 +253,8 @@ let settingsState = {
   updateApplying: false,
   updateSelectedSha: "",
   updateRepositoryUrl: "",
+  updateSource: "github",
+  updateCustomRepositoryUrl: "",
   updateReleaseChannel: DEFAULT_UPDATE_RELEASE_CHANNEL,
   accessControl: {
     modules: [],
@@ -882,6 +889,8 @@ function requestJson(url, options = {}) {
           updateApplying: false,
           updateSelectedSha: "",
           updateRepositoryUrl: "",
+          updateSource: "github",
+          updateCustomRepositoryUrl: "",
           updateReleaseChannel: DEFAULT_UPDATE_RELEASE_CHANNEL,
           accessControl: {
             modules: [],
@@ -1346,6 +1355,8 @@ async function logout() {
     updateApplying: false,
     updateSelectedSha: "",
     updateRepositoryUrl: "",
+    updateSource: "github",
+    updateCustomRepositoryUrl: "",
     updateReleaseChannel: DEFAULT_UPDATE_RELEASE_CHANNEL,
     accessControl: {
       modules: [],
@@ -3799,12 +3810,25 @@ function updateReleaseChannelLabel(channel) {
   return UPDATE_RELEASE_CHANNELS[channel] || UPDATE_RELEASE_CHANNELS[DEFAULT_UPDATE_RELEASE_CHANNEL];
 }
 
+function currentUpdateSource() {
+  const selected = String(
+    document.querySelector("[data-update-source]")?.value || settingsState.updateSource || "github",
+  ).trim();
+  return selected === "custom" ? "custom" : "github";
+}
+
 function currentUpdateRepositoryUrl() {
+  if (currentUpdateSource() === "github") return GITHUB_UPDATE_REPOSITORY_URL;
   return (
     document.querySelector("[data-update-repository-url]")?.value ||
+    settingsState.updateCustomRepositoryUrl ||
     settingsState.updateRepositoryUrl ||
     ""
   ).trim();
+}
+
+function updateSourceLabel(source) {
+  return UPDATE_SOURCES[source] || UPDATE_SOURCES.github;
 }
 
 function renderUpdatePanel(canUpdate) {
@@ -3816,7 +3840,14 @@ function renderUpdatePanel(canUpdate) {
   const status = settingsState.updateStatus || {};
   const checking = settingsState.updateChecking;
   const applying = settingsState.updateApplying;
-  const repositoryUrl = settingsState.updateRepositoryUrl || status.repositoryUrl || "";
+  const updateSource = currentUpdateSource();
+  const customRepositoryUrl =
+    settingsState.updateCustomRepositoryUrl ||
+    (settingsState.updateRepositoryUrl && settingsState.updateRepositoryUrl !== GITHUB_UPDATE_REPOSITORY_URL
+      ? settingsState.updateRepositoryUrl
+      : "");
+  const repositoryUrl =
+    updateSource === "github" ? GITHUB_UPDATE_REPOSITORY_URL : customRepositoryUrl;
   const releaseChannel =
     settingsState.updateReleaseChannel || status.releaseChannel || DEFAULT_UPDATE_RELEASE_CHANNEL;
   const deploymentBusy = ["queued", "running"].includes(status.status);
@@ -3872,12 +3903,37 @@ function renderUpdatePanel(canUpdate) {
     <div class="section-heading settings-panel-heading">
       <div><h2>版本更新</h2><span>从 GitHub 或 Gitea 读取已发布的语义化版本标签，只能选择版本号更高的版本更新应用。</span></div>
     </div>
-    <div class="update-target-field">
-      <label for="updateRepositoryUrl">项目地址</label>
-      <input id="updateRepositoryUrl" data-update-repository-url type="text" value="${escapeHtml(
-        repositoryUrl,
-      )}" placeholder="留空使用服务器默认 origin，或填写 GitHub/Gitea 仓库地址" ${busy ? "disabled" : ""} />
+    <div class="update-channel-row">
+      <div class="update-target-field">
+        <label for="updateSource">更新来源</label>
+        <select id="updateSource" data-update-source ${busy ? "disabled" : ""}>
+          ${Object.entries(UPDATE_SOURCES)
+            .map(
+              ([value, label]) =>
+                `<option value="${value}" ${updateSource === value ? "selected" : ""}>${escapeHtml(label)}</option>`,
+            )
+            .join("")}
+        </select>
+      </div>
+      <div class="update-channel-description">
+        <strong>${escapeHtml(updateSourceLabel(updateSource))}</strong>
+        <span>${
+          updateSource === "github"
+            ? `内置地址：${escapeHtml(GITHUB_UPDATE_REPOSITORY_URL)}`
+            : "填写其它 GitHub/Gitea 仓库地址；留空时使用服务器部署目录的默认 origin。"
+        }</span>
+      </div>
     </div>
+    ${
+      updateSource === "custom"
+        ? `<div class="update-target-field">
+      <label for="updateRepositoryUrl">自定义项目地址</label>
+      <input id="updateRepositoryUrl" data-update-repository-url type="text" value="${escapeHtml(
+        customRepositoryUrl,
+      )}" placeholder="留空使用服务器默认 origin，或填写 GitHub/Gitea 仓库地址" ${busy ? "disabled" : ""} />
+    </div>`
+        : ""
+    }
     <div class="update-channel-row">
       <div class="update-target-field">
         <label for="updateReleaseChannel">更新通道</label>
@@ -3923,7 +3979,7 @@ function renderUpdatePanel(canUpdate) {
     </div>
     <div class="modal-footer settings-form-footer">
       <button type="button" class="secondary-button" data-action="check-for-update" ${busy ? "disabled" : ""}>
-        ${checking ? "检查中..." : "检查版本"}
+        ${checking ? "检查中..." : updateSource === "github" ? "从 GitHub 检查更新" : "检查版本"}
       </button>
       <button type="button" class="primary-button" data-action="apply-selected-update" ${
         !selectedSha || busy ? "disabled" : ""
@@ -7609,12 +7665,15 @@ async function handleBackupScheduleSubmit(form) {
 
 async function handleUpdateCheck(button) {
   if (!hasPermission("system_updates", "update")) return showToast("当前账号没有系统更新权限", true);
+  const updateSource = currentUpdateSource();
   const repositoryUrl = currentUpdateRepositoryUrl();
   const releaseChannel =
     document.querySelector("[data-update-release-channel]")?.value ||
     settingsState.updateReleaseChannel ||
     DEFAULT_UPDATE_RELEASE_CHANNEL;
+  settingsState.updateSource = updateSource;
   settingsState.updateRepositoryUrl = repositoryUrl;
+  if (updateSource === "custom") settingsState.updateCustomRepositoryUrl = repositoryUrl;
   settingsState.updateReleaseChannel = releaseChannel;
   settingsState.updateChecking = true;
   if (button) button.disabled = true;
@@ -7622,13 +7681,20 @@ async function handleUpdateCheck(button) {
   try {
     const payload = await requestJson(API_UPDATE_CHECK_URL, {
       method: "POST",
-      body: JSON.stringify({ repositoryUrl, releaseChannel }),
+      body: JSON.stringify({
+        repositoryUrl,
+        releaseChannel,
+        persistRepositoryUrl: updateSource === "custom",
+      }),
     });
     settingsState.updateStatus = payload;
     const hasRepositoryUrl = Object.prototype.hasOwnProperty.call(payload, "repositoryUrl");
     settingsState.updateRepositoryUrl = hasRepositoryUrl ? payload.repositoryUrl || "" : repositoryUrl;
+    if (updateSource === "custom") {
+      settingsState.updateCustomRepositoryUrl = settingsState.updateRepositoryUrl;
+      settingsState.settings.update_repository_url = settingsState.updateRepositoryUrl;
+    }
     settingsState.updateReleaseChannel = payload.releaseChannel || releaseChannel;
-    settingsState.settings.update_repository_url = settingsState.updateRepositoryUrl;
     const versions = Array.isArray(payload.availableVersions) ? payload.availableVersions : [];
     settingsState.updateSelectedSha =
       payload.status === "update_available"
@@ -10955,10 +11021,23 @@ document.addEventListener("change", (event) => {
     return;
   }
 
+  const updateSource = event.target.closest("[data-update-source]");
+  if (updateSource) {
+    const nextSource = updateSource.value === "custom" ? "custom" : "github";
+    if (nextSource !== settingsState.updateSource) {
+      settingsState.updateSource = nextSource;
+      settingsState.updateStatus = null;
+      settingsState.updateSelectedSha = "";
+      render();
+    }
+    return;
+  }
+
   const updateRepositoryUrl = event.target.closest("[data-update-repository-url]");
   if (updateRepositoryUrl) {
     const nextUrl = updateRepositoryUrl.value.trim();
-    if (nextUrl !== settingsState.updateRepositoryUrl) {
+    if (nextUrl !== settingsState.updateCustomRepositoryUrl) {
+      settingsState.updateCustomRepositoryUrl = nextUrl;
       settingsState.updateRepositoryUrl = nextUrl;
       settingsState.updateStatus = null;
       settingsState.updateSelectedSha = "";

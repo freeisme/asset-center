@@ -5473,7 +5473,9 @@ class AppHandler(SimpleHTTPRequestHandler):
                 repository_url=repository_url,
                 release_channel=release_channel,
             )
-            if "repositoryUrl" in payload:
+            if "repositoryUrl" in payload and parse_bool(
+                payload.get("persistRepositoryUrl", True), True
+            ):
                 run_mysql(
                     f"""
                     INSERT INTO system_setting (setting_key, setting_value, setting_description, updated_by)

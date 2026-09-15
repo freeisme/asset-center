@@ -1353,6 +1353,39 @@ class ScrapManagementRegressionTests(TestCase):
         self.assertIn("不回补库存", body)
 
 
+class UpdateSourceSelectionTests(TestCase):
+    """更新按钮内置 GitHub 来源，并提供自定义地址入口。"""
+
+    def test_update_panel_has_builtin_github_and_custom_source(self):
+        app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'const GITHUB_UPDATE_REPOSITORY_URL = "https://github.com/freeisme/asset-center.git";',
+            app,
+        )
+        self.assertIn("const UPDATE_SOURCES = {", app)
+        self.assertIn('github: "GitHub 官方更新"', app)
+        self.assertIn('custom: "自定义更新地址"', app)
+        self.assertIn("function currentUpdateSource()", app)
+        self.assertIn(
+            'if (currentUpdateSource() === "github") return GITHUB_UPDATE_REPOSITORY_URL;',
+            app,
+        )
+        self.assertIn('data-update-source', app)
+        self.assertIn('data-update-repository-url', app)
+        self.assertIn('"从 GitHub 检查更新"', app)
+        self.assertIn("updateSource === \"custom\"", app)
+
+    def test_only_custom_source_persists_the_repository_url(self):
+        app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        server_source = (ROOT / "server.py").read_text(encoding="utf-8")
+
+        self.assertIn('persistRepositoryUrl: updateSource === "custom"', app)
+        self.assertIn('payload.get("persistRepositoryUrl", True)', server_source)
+        self.assertIn("if \"repositoryUrl\" in payload and parse_bool(", server_source)
+        self.assertIn("updateCustomRepositoryUrl", app)
+
+
 class OffboardingRecoveryWarehouseTests(TestCase):
     """回收必须显式选择目标仓库，且仓库要落库留痕。"""
 
