@@ -1555,11 +1555,11 @@ function defaultWarehouseIdForCurrentUser() {
   return defaultWarehouseIdForOrg(currentUserOrgId());
 }
 
-function warehouseOptions(selectedId = "", placeholder = "请选择仓库", preferredOrgId = "") {
+function warehouseOptions(selectedId = "", placeholder = "请选择仓库", preferredOrgId = "", useDefaultSelection = true) {
   const preferredAncestors = organizationAncestorIds(preferredOrgId);
   const preferredRank = new Map(preferredAncestors.map((orgId, index) => [orgId, index]));
   const effectiveSelectedId = String(selectedId || "").trim() || (
-    preferredOrgId ? defaultWarehouseIdForOrg(preferredOrgId) : ""
+    useDefaultSelection && preferredOrgId ? defaultWarehouseIdForOrg(preferredOrgId) : ""
   );
   const warehouses = activeWarehouses().sort((left, right) => {
     const leftRank = preferredRank.has(String(left.orgId)) ? preferredRank.get(String(left.orgId)) : Number.MAX_SAFE_INTEGER;
@@ -3159,7 +3159,6 @@ function renderEmployeeOffboardItemRow(employee, item) {
   const targetId = createControlId(`offboard-target-${safeRowKey}`);
   const recoveryWarehouseId = createControlId(`offboard-recovery-warehouse-${safeRowKey}`);
   const noteId = createControlId(`offboard-note-${safeRowKey}`);
-  const defaultRecoveryWarehouseId = defaultWarehouseIdForCurrentUser();
   return `
     <article class="offboard-item-row" data-offboard-item-row data-item-type="${escapeHtml(
       item.itemType || item.category,
@@ -3187,9 +3186,9 @@ function renderEmployeeOffboardItemRow(employee, item) {
           </select>
         </div>
         <div class="form-field" data-offboard-recovery-warehouse-field hidden>
-          <label for="${recoveryWarehouseId}">回收目标仓库</label>
+          <label for="${recoveryWarehouseId}">回收目标仓库 *</label>
           <select id="${recoveryWarehouseId}" name="recoveryWarehouseId" data-offboard-recovery-warehouse>
-            ${warehouseOptions(defaultRecoveryWarehouseId, "请选择回收目标仓库", currentUserOrgId())
+            ${warehouseOptions("", "请选择回收目标仓库", currentUserOrgId(), false)
               .map(
                 (option) =>
                   `<option value="${escapeHtml(option.value)}" ${
@@ -3221,7 +3220,7 @@ function updateOffboardItemRow(row) {
     target.required = action === "transfer";
     if (action !== "transfer") target.value = "";
   }
-  const requiresRecoveryWarehouse = row.dataset.stockAdjusted === "1" && action === "recover";
+  const requiresRecoveryWarehouse = action === "recover";
   if (recoveryWarehouseField) recoveryWarehouseField.hidden = !requiresRecoveryWarehouse;
   if (recoveryWarehouse) {
     recoveryWarehouse.disabled = !requiresRecoveryWarehouse;
@@ -3312,7 +3311,7 @@ async function handleEmployeeOffboardSubmit(form) {
       stockAdjusted: row.dataset.stockAdjusted === "1",
       targetEmployeeId: action === "transfer" ? row.querySelector("[data-offboard-target]")?.value || "" : "",
       recoveryWarehouseId:
-        action === "recover" && row.dataset.stockAdjusted === "1"
+        action === "recover"
           ? row.querySelector("[data-offboard-recovery-warehouse]")?.value || ""
           : "",
       note: String(row.querySelector("[data-offboard-note]")?.value || "").trim(),
@@ -3325,8 +3324,8 @@ async function handleEmployeeOffboardSubmit(form) {
   if (items.some((item) => item.action === "exception" && !item.note)) {
     return showToast("异常待处理必须填写说明。", true);
   }
-  if (items.some((item) => item.action === "recover" && item.stockAdjusted && !item.recoveryWarehouseId)) {
-    return showToast("回收入库的显示屏或非资产物资必须选择目标仓库。", true);
+  if (items.some((item) => item.action === "recover" && !item.recoveryWarehouseId)) {
+    return showToast("选择回收时必须指定回收目标仓库。", true);
   }
   form.dataset.submitting = "1";
   const submit = form.querySelector('button[type="submit"]');

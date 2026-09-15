@@ -1178,7 +1178,8 @@ class InventoryRecoveryRegressionTests(TestCase):
         self.assertIn("require_explicit=True", offboard_normalization)
         self.assertIn("function defaultWarehouseIdForOrg(orgId)", app)
         self.assertIn('["registrationMode", "warehouseId", "computerInventoryModelId"]', app)
-        self.assertIn("The destination is independent from the warehouse used", offboard_normalization)
+        self.assertIn("选择回收时必须指定回收目标仓库。", offboard_normalization)
+        self.assertIn("Every recovery must name its destination warehouse", offboard_normalization)
         self.assertIn(
             "ON DUPLICATE KEY UPDATE quantity = inventory_warehouse_stock.quantity",
             allocation_return,
@@ -1350,6 +1351,52 @@ class ScrapManagementRegressionTests(TestCase):
         self.assertIn("20260915_001_scrap_management.sql", body)
         self.assertIn("报废", body)
         self.assertIn("不回补库存", body)
+
+
+class OffboardingRecoveryWarehouseTests(TestCase):
+    """回收必须显式选择目标仓库，且仓库要落库留痕。"""
+
+    def test_backend_requires_and_records_the_recovery_warehouse(self):
+        service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+        normalization = service.split("    def _normalize_offboarding_plan(", 1)[1].split(
+            "\n    def offboard_employee(",
+            1,
+        )[0]
+        offboard = service.split("    def offboard_employee(", 1)[1]
+
+        self.assertIn('raise self.api_error("选择回收时必须指定回收目标仓库。")', normalization)
+        self.assertIn(
+            'raw_item.get("recoveryWarehouseId") or raw_item.get("warehouseId")',
+            normalization,
+        )
+        self.assertIn('{"warehouseId": requested_warehouse_id}', normalization)
+        self.assertIn('"employees",', normalization)
+        self.assertIn("require_explicit=True", normalization)
+        # 目标仓库对所有回收项生效，不再以“是否扣减过库存”为条件。
+        self.assertNotIn("and stock_adjusted:\n                    source_warehouse_ids", normalization)
+        self.assertIn("THEN {recovery_warehouse_id_sql}", offboard)
+        self.assertIn('{recovery_warehouse_id_sql if action == "recover" else "NULL"}', offboard)
+
+    def test_frontend_requires_an_explicit_warehouse_without_preselecting_one(self):
+        app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("const requiresRecoveryWarehouse = action === \"recover\";", app)
+        self.assertIn("回收目标仓库 *", app)
+        self.assertIn(
+            'warehouseOptions("", "请选择回收目标仓库", currentUserOrgId(), false)',
+            app,
+        )
+        self.assertIn('return showToast("选择回收时必须指定回收目标仓库。", true);', app)
+        self.assertIn(
+            'function warehouseOptions(selectedId = "", placeholder = "请选择仓库", '
+            'preferredOrgId = "", useDefaultSelection = true)',
+            app,
+        )
+        self.assertIn(
+            "useDefaultSelection && preferredOrgId ? defaultWarehouseIdForOrg(preferredOrgId) : \"\"",
+            app,
+        )
+        self.assertNotIn('action === "recover" && row.dataset.stockAdjusted === "1"', app)
 
 
 class WarehouseInventoryRegressionTests(TestCase):

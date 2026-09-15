@@ -3912,17 +3912,25 @@ class AssetService:
                                 self._warehouse(source_warehouse_id, include_inactive=True),
                                 "warehouse_management",
                             )
-                    # Every stock-adjusted recovery must name its destination.
-                    # The destination is independent from the warehouse used
-                    # when the item was issued.
-                    target_warehouse = self._resolve_warehouse(
-                        raw_item,
-                        context,
-                        "employees",
-                        require_explicit=True,
-                    )
-                    current["recoveryWarehouseId"] = self.db.text(target_warehouse.get("id"))
-                    current["recoveryWarehouseName"] = self.db.text(target_warehouse.get("name"))
+            if action == "recover":
+                # Every recovery must name its destination warehouse, no matter
+                # whether the item was deducted from stock: the destination is
+                # recorded for traceability and used for stock recovery when the
+                # item was issued from inventory.
+                requested_warehouse_id = self.db.integer(
+                    raw_item.get("recoveryWarehouseId") or raw_item.get("warehouseId"),
+                    0,
+                )
+                if requested_warehouse_id <= 0:
+                    raise self.api_error("选择回收时必须指定回收目标仓库。")
+                target_warehouse = self._resolve_warehouse(
+                    {"warehouseId": requested_warehouse_id},
+                    context,
+                    "employees",
+                    require_explicit=True,
+                )
+                current["recoveryWarehouseId"] = self.db.text(target_warehouse.get("id"))
+                current["recoveryWarehouseName"] = self.db.text(target_warehouse.get("name"))
             submitted_keys.append(key)
             normalized.append(current)
 
@@ -4634,7 +4642,6 @@ class AssetService:
                         returned_by = {actor_sql},
                         warehouse_id = CASE
                           WHEN {1 if action == "recover" else 0} = 1
-                            AND stock_adjusted = 1
                             THEN {recovery_warehouse_id_sql}
                           ELSE warehouse_id
                         END,
@@ -4653,7 +4660,7 @@ class AssetService:
                     )
                     SELECT
                       {self.db.quote(allocation_type)}, {employee_id_int}, {type_id_sql}, {model_id_sql},
-                      {recovery_warehouse_id_sql if action == "recover" and stock_adjusted else "NULL"},
+                      {recovery_warehouse_id_sql if action == "recover" else "NULL"},
                       {item_id}, {quantity}, {stock_adjusted}, {self.db.quote(target_status)},
                       CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, {self.db.quote(note)}, {actor_sql}, {actor_sql}
                     FROM DUAL
