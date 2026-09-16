@@ -1268,17 +1268,50 @@ class AssetService:
                 raise self.api_error("Unable to create computer.")
         return {"computer": self._computer(computer_id)}
 
+    def _shared_employee_number(self, org_id: object, exclude_employee_id: object = 0) -> str:
+        """Generate ``SHARED-<组织编码>-NN`` for a shared (non-personal) holder."""
+        org = self.db.json(
+            f"""
+            SELECT JSON_OBJECT('code', org_code)
+            FROM org_unit
+            WHERE org_unit_id = {self.db.integer(org_id, 0)}
+            """,
+            None,
+        )
+        org_code = self.db.text((org or {}).get("code")).upper() or "ORG"
+        prefix = f"SHARED-{org_code}-"
+        existing = self.db.json(
+            f"""
+            SELECT COALESCE(JSON_ARRAYAGG(employee_no), JSON_ARRAY())
+            FROM employee
+            WHERE employee_no LIKE {self.db.quote(prefix + '%')}
+              AND employee_id <> {self.db.integer(exclude_employee_id, 0)}
+            """,
+            [],
+        )
+        used = {
+            self.db.text(value)[len(prefix):]
+            for value in (existing or [])
+            if self.db.text(value).startswith(prefix)
+        }
+        index = 1
+        while f"{index:02d}" in used:
+            index += 1
+        return f"{prefix}{index:02d}"
+
     def _save_employee(self, resource_id: object | None, payload: dict, context: dict) -> dict:
-        employee_no = self.db.text(payload.get("employeeNo"))
         name = self.db.text(payload.get("name"))
-        if not employee_no or not name:
-            raise self.api_error("Employee number and name are required.")
         status = self.db.text(payload.get("status")) or "active"
-        if status not in {"active", "inactive"}:
+        if status not in {"active", "inactive", "shared"}:
             raise self.api_error("Use the employee offboarding command for left employees.")
         org_id = self.db.integer(payload.get("orgId"), 0)
         self.scope.assert_org_access(context, org_id)
         employee_id = self.db.integer(resource_id, 0)
+        employee_no = self.db.text(payload.get("employeeNo"))
+        if not employee_no and status == "shared":
+            employee_no = self._shared_employee_number(org_id, employee_id)
+        if not employee_no or not name:
+            raise self.api_error("Employee number and name are required.")
         old = self._employee(employee_id) if employee_id else None
         if old:
             self.scope.assert_org_access(context, old.get("orgId"))
@@ -1571,8 +1604,8 @@ class AssetService:
         employee = self._employee(payload.get("employeeId"))
         self.scope.assert_org_access(context, employee.get("orgId"))
         self._assert_employee_scope(context, employee.get("id"))
-        if self.db.text(employee.get("status")) != "active":
-            raise self.conflict_error("A computer can only be assigned to an active employee.")
+        if self.db.text(employee.get("status")) not in {"active", "shared"}:
+            raise self.conflict_error("办公终端只能分配给在职人员或公用人员。")
         if self.db.text(computer.get("status")) in {"retired", "lost"}:
             raise self.conflict_error("This computer cannot be assigned in its current lifecycle state.")
         computer_id_int = self.db.integer(computer_id, 0)
@@ -4006,8 +4039,8 @@ class AssetService:
                 target = target_cache.get(target_id)
                 if target is None:
                     target = self._employee(target_id)
-                    if self.db.text(target.get("status")) != "active":
-                        raise self.api_error("离职资产只能转交给在职人员。")
+                    if self.db.text(target.get("status")) not in {"active", "shared"}:
+                        raise self.api_error("离职资产只能转交给在职人员或公用人员。")
                     self.scope.assert_org_access(context, target.get("orgId"))
                     target_cache[target_id] = target
             elif target_id > 0:
@@ -4189,6 +4222,8 @@ class AssetService:
         employee_name = self.db.text(employee.get("name"))
         employee_no = self.db.text(employee.get("employeeNo"))
         employee_label = f"{employee_name}（{employee_no}）" if employee_no else employee_name
+        # 公用人员是占位使用人：办理“离职”等同于删除，不写入离职人员档案。
+        shared_employee = self.db.text(employee.get("status")) == "shared"
 
         statements: list[str] = [
             "START TRANSACTION",
@@ -4869,8 +4904,9 @@ class AssetService:
                 FROM employee
                 WHERE employee_id = {employee_id_int}
                   AND @offboard_success = 1
+                  AND {0 if shared_employee else 1} = 1
                 """,
-                "SET @archive_id = IF(@offboard_success = 1, LAST_INSERT_ID(), 0)",
+                f"SET @archive_id = IF(@offboard_success = 1 AND {0 if shared_employee else 1} = 1, LAST_INSERT_ID(), 0)",
                 f"""
                 UPDATE auth_session session
                 JOIN user_account account
@@ -4890,6 +4926,7 @@ class AssetService:
                 f"""
                 UPDATE employee
                 SET employment_status = 'left'
+                    {", is_active = 0" if shared_employee else ""}
                 WHERE employee_id = {employee_id_int}
                   AND employment_status <> 'left'
                   AND @offboard_success = 1
@@ -4900,8 +4937,12 @@ class AssetService:
                 )
                 SELECT
                   {actor_id}, 'system', @archive_id, 'employee_offboarded',
-                  {self.db.quote('离职办理完成')},
-                  {self.db.quote(f'人员 {employee_label} 已完成离职办理，账号绑定已解除。')}
+                  {self.db.quote('公用人员已删除' if shared_employee else '离职办理完成')},
+                  {self.db.quote(
+                      f'公用人员 {employee_label} 已删除，名下资产与物资已按清单处理。'
+                      if shared_employee
+                      else f'人员 {employee_label} 已完成离职办理，账号绑定已解除。'
+                  )}
                 FROM DUAL
                 WHERE @offboard_success = 1
                   AND {actor_id} > 0
@@ -4911,7 +4952,11 @@ class AssetService:
                     "employee",
                     self.db.quote(str(employee_id_int)),
                     employee_label,
-                    f"人员 {employee_label} 已完成受控离职办理",
+                    (
+                        f"公用人员 {employee_label} 已删除（占位人员，不进入离职人员档案）"
+                        if shared_employee
+                        else f"人员 {employee_label} 已完成受控离职办理"
+                    ),
                     context,
                     "@offboard_success = 1",
                     {
@@ -4920,6 +4965,8 @@ class AssetService:
                     },
                     {
                         "status": "left",
+                        "isActive": 0 if shared_employee else 1,
+                        "archived": not shared_employee,
                         "leaveDate": leave_date,
                         "itemCount": len(plan),
                         "unboundAccounts": "computed",
@@ -4945,13 +4992,14 @@ class AssetService:
         archive_id = self.db.integer(result[1] if len(result) > 1 else 0, 0)
         processed_items = self.db.integer(result[2] if len(result) > 2 else 0, 0)
         unbound_accounts = self.db.integer(result[3] if len(result) > 3 else 0, 0)
-        if success != 1 or archive_id <= 0:
+        if success != 1 or (archive_id <= 0 and not shared_employee):
             raise self.conflict_error("离职资产清单已变化，请刷新后重新办理。")
 
         response = {
             "archiveId": str(archive_id),
             "employeeId": str(employee_id_int),
             "status": "left",
+            "sharedRemoved": shared_employee,
             "processedItems": processed_items,
             "unboundAccounts": unbound_accounts,
             "recoveryRecords": self._recovery_records_since(movement_baseline, ("leave_recovery",)),

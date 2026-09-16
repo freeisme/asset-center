@@ -445,14 +445,15 @@ def validate_employee_binding(value: object | None, current_user_id: str = "") -
             FROM employee
             WHERE employee_id = {employee_id}
               AND is_active = 1
-              AND employment_status <> 'left';
+              AND employment_status <> 'left'
+              AND employment_status <> 'shared';
             """,
             database=DB_NAME,
         ).strip(),
         0,
     )
     if employee_exists != 1:
-        raise ApiError("绑定人员不存在、已停用或已离职。")
+        raise ApiError("绑定人员不存在、已停用、已离职，或为不可绑定账号的公用人员。")
     assigned = sql_int(
         run_mysql(
             f"""

@@ -1021,6 +1021,11 @@ tbody tr:hover {
   background: var(--red-soft);
 }
 
+.status-shared {
+  color: #5b5bd6;
+  background: rgba(91, 91, 214, 0.12);
+}
+
 .device-list {
   display: flex;
   flex-wrap: wrap;

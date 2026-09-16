@@ -478,6 +478,71 @@ def main() -> int:
     ) + snapshot.count(f'"recoveryWarehouseId": "{warehouse_b}"')
     assert recorded_warehouses == 3, f"归档快照必须记录三件物资的回收仓库: {snapshot[:400]}"
     print("offboarding recovery warehouse enforced:", result.get("archiveId"))
+
+    # 5. 公用人员：可挂靠设备、禁止绑定账号、办理离职等同删除且不进入离职人员档案。
+    status, shared_employee = admin.request(
+        "POST",
+        "/api/resources/employee",
+        {
+            "name": f"{PREFIX}公用占位",
+            "orgId": fixture["org_id"],
+            "status": "shared",
+            "department": f"{PREFIX}公用",
+        },
+        expected=201,
+        extra_headers={"Idempotency-Key": f"{PREFIX}-shared-employee-{suffix}"},
+    )
+    shared_id = str(shared_employee["employee"]["id"])
+    shared_no = sql_scalar(f"SELECT employee_no FROM employee WHERE employee_id = {shared_id};")
+    assert shared_no.startswith("SHARED-"), shared_no
+    assert sql_scalar(f"SELECT employment_status FROM employee WHERE employee_id = {shared_id};") == "shared"
+
+    status, _ = admin.request(
+        "POST",
+        f"/api/computers/{computer_id}/assignments",
+        {"employeeId": shared_id, "notes": f"{PREFIX} 公用挂靠"},
+        expected=201,
+        extra_headers={"Idempotency-Key": f"{PREFIX}-shared-assign-{suffix}"},
+    )
+    status, error = admin.request(
+        "POST",
+        "/api/users",
+        {
+            "username": f"{PREFIX}_shared_user_{suffix}",
+            "displayName": f"{PREFIX}公用绑定",
+            "roleCode": "viewer",
+            "password": PASSWORD,
+            "employeeId": shared_id,
+        },
+        extra_headers={"Idempotency-Key": f"{PREFIX}-shared-user-{suffix}"},
+    )
+    assert status == 400, (status, error)
+    assert "公用人员" in json.dumps(error, ensure_ascii=False), error
+    print("shared holder cannot bind a login account:", error.get("error"))
+
+    status, removed = admin.request(
+        "POST",
+        f"/api/employees/{shared_id}/offboard",
+        {
+            **offboard_payload,
+            "items": [
+                {
+                    "itemType": "computer",
+                    "itemId": computer_id,
+                    "action": "recover",
+                    "recoveryWarehouseId": warehouse_b,
+                }
+            ],
+        },
+        expected=200,
+        extra_headers={"Idempotency-Key": f"{PREFIX}-shared-offboard-{suffix}"},
+    )
+    assert removed.get("sharedRemoved") is True, removed
+    assert sql_scalar(f"SELECT is_active FROM employee WHERE employee_id = {shared_id};") == "0"
+    assert (
+        sql_scalar(f"SELECT COUNT(*) FROM left_employee_archive WHERE employee_no = '{shared_no}';") == "0"
+    ), "公用人员删除后不应进入离职人员档案"
+    print("shared holder removed without archive:", shared_no)
     print("OFFBOARDING REGRESSION OK")
     return 0
 

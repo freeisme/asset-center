@@ -806,7 +806,7 @@ class EmployeeWorkflowUiTests(TestCase):
             1,
         )[0]
 
-        self.assertIn('["active", "inactive"].map', editor)
+        self.assertIn('["active", "inactive", "shared"].map', editor)
         self.assertNotIn('"left"', editor)
         self.assertNotIn("data-left-fields", editor)
         self.assertNotIn('"leaveDate"', editor)
@@ -853,7 +853,7 @@ class EmployeeWorkflowUiTests(TestCase):
         self.assertIn("当前名下资产或物资必须逐项处理后才能办理离职。", service)
         self.assertIn("异常待处理必须填写说明。", service)
         self.assertIn("转交他人时必须选择接收人员。", service)
-        self.assertIn("离职资产只能转交给在职人员。", service)
+        self.assertIn("离职资产只能转交给在职人员或公用人员。", service)
         self.assertIn("离职办理异常待处理", service)
         self.assertIn("离职办理转交给", service)
         self.assertIn("离职办理回收入库", service)
@@ -1387,6 +1387,66 @@ class UpdateSourceSelectionTests(TestCase):
         self.assertIn('payload.get("persistRepositoryUrl", True)', server_source)
         self.assertIn("if \"repositoryUrl\" in payload and parse_bool(", server_source)
         self.assertIn("updateCustomRepositoryUrl", app)
+
+
+class SharedEmployeeStatusTests(TestCase):
+    """公用人员：可挂靠设备、禁止绑定账号、办理离职等同删除。"""
+
+    def test_migration_allows_the_shared_status(self):
+        migration = (
+            ROOT / "database" / "migrations" / "20260916_001_shared_employee_status.sql"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("ck_employee_status", migration)
+        self.assertIn(
+            "CHECK (employment_status IN ('active', 'inactive', 'left', 'shared'))",
+            migration,
+        )
+        self.assertIn("information_schema.table_constraints", migration)
+        self.assertNotIn("DROP TABLE", migration.upper())
+
+    def test_backend_accepts_shared_and_blocks_account_binding(self):
+        service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+        server_source = (ROOT / "server.py").read_text(encoding="utf-8")
+        save_employee = service.split("    def _save_employee(", 1)[1].split(
+            "\n    def _save_organization(",
+            1,
+        )[0]
+
+        self.assertIn('if status not in {"active", "inactive", "shared"}', save_employee)
+        self.assertIn("def _shared_employee_number(", service)
+        self.assertIn('prefix = f"SHARED-{org_code}-"', service)
+        self.assertIn('not in {"active", "shared"}', service)
+        self.assertIn("离职资产只能转交给在职人员或公用人员。", service)
+        self.assertIn("AND employment_status <> 'shared';", server_source)
+        self.assertIn("或为不可绑定账号的公用人员", server_source)
+
+    def test_offboarding_a_shared_holder_skips_the_left_employee_archive(self):
+        service = (ROOT / "office_asset" / "asset_service.py").read_text(encoding="utf-8")
+        offboard = service.split("    def offboard_employee(", 1)[1].split(
+            "\n    def _recovery_records_since(",
+            1,
+        )[0]
+
+        self.assertIn('shared_employee = self.db.text(employee.get("status")) == "shared"', offboard)
+        self.assertIn("is_active = 0", offboard)
+        self.assertIn('"sharedRemoved": shared_employee', offboard)
+        self.assertIn("公用人员 {employee_label} 已删除", offboard)
+
+    def test_frontend_exposes_the_shared_status(self):
+        app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        styles = (ROOT / "web" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('shared: "公用"', app)
+        self.assertIn('["active", "inactive", "shared"]', app)
+        self.assertIn('["active", "shared"].includes(employee.status)', app)
+        self.assertIn("includeSharedInOrgCount", app)
+        self.assertIn("data-org-count-include-shared", app)
+        self.assertIn("SHARED-${orgCode}-", app)
+        self.assertIn('employee.status === "shared" ? "删除" : "办理离职"', app)
+        self.assertIn("删除公用人员", app)
+        self.assertIn('!["left", "shared"].includes(employee.status)', app)
+        self.assertIn(".status-shared {", styles)
 
 
 class RecoveryInboundTests(TestCase):

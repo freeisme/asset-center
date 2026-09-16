@@ -136,6 +136,7 @@ const statusLabels = {
   active: "在职",
   inactive: "停用",
   left: "离职",
+  shared: "公用",
 };
 
 const offboardActionLabels = {
@@ -442,6 +443,7 @@ function getSeedState() {
     selectedComputerIds: [],
     selectedEmployeeIds: [],
     expandedOrgIds: orgs.map((org) => org.id),
+    includeSharedInOrgCount: false,
     expandedInventoryTypeIds: [],
     expandedInventoryBrandIds: [],
     orgs,
@@ -486,6 +488,7 @@ function extractUiState(value) {
     selectedComputerIds: value.selectedComputerIds,
     selectedEmployeeIds: value.selectedEmployeeIds,
     expandedOrgIds: value.expandedOrgIds,
+    includeSharedInOrgCount: Boolean(value.includeSharedInOrgCount),
     expandedInventoryTypeIds: value.expandedInventoryTypeIds,
     expandedInventoryBrandIds: value.expandedInventoryBrandIds,
   };
@@ -818,7 +821,24 @@ function employeeNumberPrefix(orgId) {
   return codes.join("-") || "ORG";
 }
 
-function employeeNumberFor(orgId, employeeId = "") {
+function employeeNumberFor(orgId, employeeId = "", status = "active") {
+  if (status === "shared") {
+    const org = getOrg(orgId);
+    const orgCode = String(org?.code || orgCodeBase(org?.name)).toUpperCase() || "ORG";
+    const sharedPrefix = `SHARED-${orgCode}-`;
+    const usedShared = new Set(
+      state.employees
+        .filter((employee) => employee.id !== employeeId)
+        .map((employee) => String(employee.employeeNo || ""))
+        .filter((value) => value.startsWith(sharedPrefix))
+        .map((value) => value.slice(sharedPrefix.length))
+        .filter((value) => /^\d+$/.test(value))
+        .map((value) => Number(value)),
+    );
+    let sharedSequence = 1;
+    while (usedShared.has(sharedSequence)) sharedSequence += 1;
+    return `${sharedPrefix}${String(sharedSequence).padStart(2, "0")}`;
+  }
   const prefix = employeeNumberPrefix(orgId);
   const departmentEmployees = state.employees.filter(
     (employee) => employee.orgId === orgId && employee.id !== employeeId,
@@ -2609,7 +2629,11 @@ function getFilteredEmployees() {
 
 function getOrgEmployeeCount(orgId, includeDescendants = false) {
   const scope = new Set(includeDescendants ? getSubtreeOrgIds(orgId) : [orgId]);
-  return state.employees.filter((employee) => scope.has(employee.orgId || "")).length;
+  return state.employees.filter(
+    (employee) =>
+      scope.has(employee.orgId || "") &&
+      (state.includeSharedInOrgCount || employee.status !== "shared"),
+  ).length;
 }
 
 function getOrgComputerCount(orgId, includeDescendants = false) {
@@ -3157,7 +3181,7 @@ function offboardActionOptions(selected = "recover") {
 function offboardTargetEmployeeOptions(employeeId) {
   return [{ value: "", label: "请选择接收人员" }].concat(
     sortEmployees(state.employees)
-      .filter((employee) => employee.id !== employeeId && employee.status === "active")
+      .filter((employee) => employee.id !== employeeId && ["active", "shared"].includes(employee.status))
       .map((employee) => ({
         value: employee.id,
         label: `${employee.name} · ${employee.employeeNo} · ${orgName(employee.orgId)}`,
@@ -3317,8 +3341,14 @@ function openEmployeeOffboardModal(employeeId) {
   const employee = getEmployee(employeeId);
   if (!employee) return;
   const devices = employeeRecoveryDevices(employee);
+  const isSharedEmployee = employee.status === "shared";
   openModal(
-    `${modalHeader("办理离职", `${employee.name || employee.employeeNo} · 逐项确认资产和物资处理结果`)}
+    `${modalHeader(
+      isSharedEmployee ? "删除公用人员" : "办理离职",
+      isSharedEmployee
+        ? `${employee.name || employee.employeeNo} · 公用人员（占位使用人），确认后删除且不进入离职人员档案`
+        : `${employee.name || employee.employeeNo} · 逐项确认资产和物资处理结果`,
+    )}
       <form data-form="employee-offboard" data-id="${escapeHtml(employee.id)}">
         <section class="modal-section">
           <div class="form-grid">
@@ -3341,7 +3371,9 @@ function openEmployeeOffboardModal(employeeId) {
             }
           </div>
         </section>
-        <div class="modal-footer"><button type="button" class="secondary-button" data-action="close-modal">取消</button><button class="primary-button" type="submit">确认办理离职</button></div>
+        <div class="modal-footer"><button type="button" class="secondary-button" data-action="close-modal">取消</button><button class="primary-button" type="submit">${
+          isSharedEmployee ? "确认删除" : "确认办理离职"
+        }</button></div>
       </form>`,
     true,
   );
@@ -4216,7 +4248,7 @@ function openSettingsUserModal(id = "") {
     .map((role) => ({ value: role.code, label: role.name || role.code }));
   const employeeOptions = [{ value: "", label: "仅超级管理员可不绑定人员" }].concat(
     (state.employees || [])
-      .filter((employee) => employee.status !== "left")
+      .filter((employee) => !["left", "shared"].includes(employee.status))
       .map((employee) => ({
         value: employee.id,
         label: `${employee.name} · ${employee.department || orgName(employee.orgId) || "未分配部门"} (${employee.employeeNo || ""})`,
@@ -4874,7 +4906,7 @@ function renderEmployeesPage() {
         <button class="secondary-button" data-action="apply-employee-search">搜索</button>
         <label class="select-box"><select data-filter="employeeStatus">
           <option value="">全部人员状态</option>
-          ${["active", "inactive"]
+          ${["active", "inactive", "shared"]
             .map(
               (status) =>
                 `<option value="${status}" ${statusFilter === status ? "selected" : ""}>${escapeHtml(
@@ -4905,6 +4937,9 @@ function renderEmployeesPage() {
             ? '<button class="secondary-button" data-action="clear-employee-filters">清除筛选</button>'
             : ""
         }
+        <label class="secondary-text"><input type="checkbox" data-org-count-include-shared ${
+          state.includeSharedInOrgCount ? "checked" : ""
+        } /> 组织树人数含公用人员</label>
       </div>
       <span class="secondary-text">显示 ${filteredEmployees.length} / ${state.employees.length} 人 · ${directTreeCount} 个顶层节点</span>
     </div>
@@ -6375,7 +6410,7 @@ function renderEmployeeTreeRow(employee) {
           hasPermission("employees", "update") && employee.status !== "left"
             ? `<button class="text-button danger" data-action="open-employee-offboard" data-id="${escapeHtml(
                 employee.id,
-              )}">办理离职</button>`
+              )}">${employee.status === "shared" ? "删除" : "办理离职"}</button>`
             : ""
         }
       </div>
@@ -6428,7 +6463,7 @@ function renderEmployeeTable(employees, withActions) {
                           hasPermission("employees", "update") && employee.status !== "left"
                             ? `<button class="text-button danger" data-action="open-employee-offboard" data-id="${escapeHtml(
                                 employee.id,
-                              )}">办理离职</button>`
+                              )}">${employee.status === "shared" ? "删除" : "办理离职"}</button>`
                             : ""
                         }
                       </div></td>`
@@ -7113,7 +7148,7 @@ function openEmployeeModal(id = "", presetOrgId = "") {
   };
   const isEditing = Boolean(id);
   const hasExistingNumber = Boolean(String(employee.employeeNo || "").trim());
-  const initialEmployeeNo = hasExistingNumber ? employee.employeeNo : employeeNumberFor(employee.orgId, employee.id);
+  const initialEmployeeNo = hasExistingNumber ? employee.employeeNo : employeeNumberFor(employee.orgId, employee.id, employee.status);
   openModal(
     `${modalHeader(isEditing ? "编辑使用人员" : "新增使用人员", "人员归属到组织树节点后，会同步出现在树状视图中")}
       <form data-form="employee" data-id="${escapeHtml(employee.id)}">
@@ -7141,7 +7176,7 @@ function openEmployeeModal(id = "", presetOrgId = "") {
               "人员状态",
               "status",
               employee.status,
-              ["active", "inactive"].map((value) => ({ value, label: statusLabels[value] })),
+              ["active", "inactive", "shared"].map((value) => ({ value, label: statusLabels[value] })),
               true,
             )}
             ${inputField("部门", "department", employee.department, false, "IT")}
@@ -8030,7 +8065,7 @@ function handleComputerSubmit(form) {
 function handleEmployeeSubmit(form) {
   const data = Object.fromEntries(new FormData(form).entries());
   const id = form.dataset.id;
-  const employeeNo = String(data.employeeNo || "").trim() || employeeNumberFor(data.orgId, id);
+  const employeeNo = String(data.employeeNo || "").trim() || employeeNumberFor(data.orgId, id, data.status);
   const duplicate = state.employees.find((employee) => employee.employeeNo === employeeNo && employee.id !== id);
   if (duplicate) return showToast("人员编号已存在", true);
 
@@ -10506,7 +10541,7 @@ async function handleEmployeeSubmit(form) {
   if (data.status === "left") {
     return showToast("离职归档仍需通过受控回收流程，暂不允许从编辑表单直接提交。", true);
   }
-  const employeeNo = String(data.employeeNo || "").trim() || employeeNumberFor(data.orgId, id);
+  const employeeNo = String(data.employeeNo || "").trim() || employeeNumberFor(data.orgId, id, data.status);
   if (!data.name || !employeeNo) return showToast("人员编号和姓名不能为空。", true);
   try {
     await saveResource("employee", id, {
@@ -11045,6 +11080,14 @@ document.addEventListener("submit", (event) => {
 });
 
 document.addEventListener("change", (event) => {
+  const sharedOrgCountToggle = event.target.closest("[data-org-count-include-shared]");
+  if (sharedOrgCountToggle) {
+    state.includeSharedInOrgCount = Boolean(sharedOrgCountToggle.checked);
+    persistState(false);
+    render();
+    return;
+  }
+
   const ticketFormSelect = event.target.closest('form[data-form="ticket"] select[name="formCode"]');
   if (ticketFormSelect) {
     ticketFormDraft.selectedCode = ticketFormSelect.value || "";
@@ -11177,8 +11220,23 @@ document.addEventListener("change", (event) => {
       (numberInput.dataset.generated === "true" ||
         numberInput.value === (numberInput.dataset.originalNumber || ""))
     ) {
-      numberInput.value = employeeNumberFor(event.target.value, employeeForm.dataset.id || "");
+      numberInput.value = employeeNumberFor(
+        event.target.value,
+        employeeForm.dataset.id || "",
+        employeeForm.querySelector('select[name="status"]')?.value || "active",
+      );
       numberInput.dataset.generated = "true";
+    }
+  }
+  if (employeeForm && event.target.name === "status") {
+    const numberInput = employeeForm.querySelector('input[name="employeeNo"]');
+    const orgInput = employeeForm.querySelector('select[name="orgId"]');
+    if (numberInput && numberInput.dataset.generated === "true") {
+      numberInput.value = employeeNumberFor(
+        orgInput?.value || "",
+        employeeForm.dataset.id || "",
+        event.target.value || "active",
+      );
     }
   }
   const orgForm = event.target.closest('form[data-form="org"]');
