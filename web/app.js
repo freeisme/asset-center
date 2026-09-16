@@ -494,23 +494,6 @@ function extractUiState(value) {
   };
 }
 
-function extractDataState(value) {
-  return {
-    orgs: value.orgs,
-    nonAssetTypes: value.nonAssetTypes,
-    inventoryBrands: value.inventoryBrands,
-    inventoryModels: value.inventoryModels,
-    warehouses: value.warehouses,
-    warehouseStocks: value.warehouseStocks,
-    inventoryMovementLogs: value.inventoryMovementLogs,
-    inventoryPurchaseLogs: value.inventoryPurchaseLogs,
-    employees: value.employees,
-    leftEmployees: value.leftEmployees,
-    computers: value.computers,
-    stateRevision: value.stateRevision || 0,
-  };
-}
-
 function loadInitialState() {
   return normalizeState({
     ...getSeedState(),
@@ -1800,30 +1783,6 @@ function inventoryModelsForBrand(brandId) {
     .sort((a, b) => Number(a.sortOrder) - Number(b.sortOrder) || compareText(a.name, b.name));
 }
 
-function inventoryTypeTotal(typeId) {
-  return state.inventoryModels
-    .filter((model) => model.typeId === typeId)
-    .reduce((sum, model) => sum + Math.max(0, Number(model.quantity || 0)), 0);
-}
-
-function inventoryTypeUsageCount(typeId) {
-  const assignedCount = state.employees.reduce((sum, employee) => {
-    const monitorCount = (employee.monitors || []).filter((item) => item.typeId === typeId).length;
-    const nonAssetCount = getNonAssetItems(employee).filter((item) => item.typeId === typeId).length;
-    return sum + monitorCount + nonAssetCount;
-  }, 0);
-  const stockCount =
-    state.inventoryBrands.filter((item) => item.typeId === typeId).length +
-    state.inventoryModels.filter((item) => item.typeId === typeId).length;
-  return assignedCount + stockCount;
-}
-
-function inventoryBrandTotal(brandId) {
-  return state.inventoryModels
-    .filter((model) => model.brandId === brandId)
-    .reduce((sum, model) => sum + Math.max(0, Number(model.quantity || 0)), 0);
-}
-
 const inventoryTypeCodeOverrides = {
   鼠标: "SB",
   键盘: "JP",
@@ -1960,49 +1919,6 @@ function currentTimestampText() {
 
 function currentDateText() {
   return currentTimestampText().slice(0, 10);
-}
-
-function normalizeInventoryMovementLogs(logs) {
-  return (Array.isArray(logs) ? logs : []).map((log) => ({
-    id: String(log.id || createId("invlog")),
-    direction: log.direction === "decrease" ? "decrease" : "increase",
-    typeName: log.typeName || "",
-    brandName: log.brandName || "",
-    modelName: log.modelName || "",
-    quantity: Math.max(1, Number(log.quantity || 1)),
-    sourceWarehouseId: String(log.sourceWarehouseId || ""),
-    targetWarehouseId: String(log.targetWarehouseId || ""),
-    sourceLabel: log.sourceLabel || "",
-    targetLabel: log.targetLabel || "",
-    note: log.note || "",
-    relatedEmployeeNo: log.relatedEmployeeNo || "",
-    relatedEmployeeName: log.relatedEmployeeName || "",
-    triggerAction: log.triggerAction || "manual",
-    occurredAt: log.occurredAt || "",
-  }));
-}
-
-function normalizeInventoryPurchaseLogs(logs) {
-  return (Array.isArray(logs) ? logs : []).map((log) => ({
-    id: String(log.id || createId("purchase")),
-    typeName: log.typeName || "",
-    brandName: log.brandName || "",
-    modelName: log.modelName || "",
-    typeId: String(log.typeId || ""),
-    brandId: String(log.brandId || ""),
-    modelId: String(log.modelId || ""),
-    warehouseId: String(log.warehouseId || ""),
-    quantity: Math.max(1, Number(log.quantity || 1)),
-    inboundDate: log.inboundDate || "",
-    cpu: log.cpu || "",
-    memory: log.memory || "",
-    storage: log.storage || "",
-    gpu: log.gpu || "",
-    sourceLabel: log.sourceLabel || "",
-    note: log.note || "",
-    sourceMovementLogId: log.sourceMovementLogId || "",
-    createdAt: log.createdAt || "",
-  }));
 }
 
 function inventoryDirectionLabel(direction) {
@@ -2283,12 +2199,6 @@ function inventoryFlatRows() {
   );
 }
 
-function inventoryModelForSelection(typeId, brandId, modelName) {
-  return state.inventoryModels.find(
-    (model) => model.typeId === typeId && model.brandId === brandId && model.name === modelName,
-  );
-}
-
 function resolveInventorySelection(data) {
   const typeId = data.typeId || "";
   const selectedBrand = data.brandId && data.brandId !== "__custom__" ? getInventoryBrand(data.brandId) : null;
@@ -2495,10 +2405,6 @@ function computerConfigSummary(computer) {
     .filter(([, value]) => String(value || "").trim())
     .map(([label, value]) => `${label}: ${value}`)
     .join(" / ");
-}
-
-function deviceTypeTag(value) {
-  return `<span class="tag-chip">${escapeHtml(deviceTypeLabel(value))}</span>`;
 }
 
 function orgSortKey(org) {
@@ -2865,29 +2771,6 @@ function buildArchivedEmployeeRecord(employee, archiveInput = {}) {
     archivedAt: archiveInput.archivedAt || existing?.archivedAt || currentTimestampText(),
     devices: employeeDeviceSnapshot(employee),
   };
-}
-
-function archiveEmployee(employee, archiveInput = {}) {
-  const archiveRecord = buildArchivedEmployeeRecord(employee, archiveInput);
-  state.leftEmployees = [archiveRecord].concat(
-    state.leftEmployees.filter(
-      (item) => item.id !== archiveRecord.id && item.sourceEmployeeId !== archiveRecord.sourceEmployeeId,
-    ),
-  );
-
-  state.employees = state.employees.filter((item) => item.id !== employee.id);
-  state.selectedEmployeeIds = state.selectedEmployeeIds.filter((id) => id !== employee.id);
-
-  state.computers = state.computers.map((computer) => {
-    if (computer.userId !== employee.id) return computer;
-    return normalizeComputerRecord({
-      ...computer,
-      userId: null,
-      status: "idle",
-    });
-  });
-  normalizeComputersAgainstEmployees();
-  return archiveRecord;
 }
 
 function employeeRecoveryDevices(employee) {
@@ -4673,12 +4556,6 @@ function renderDashboardOrgTreeNode(org, depth = 0) {
   `;
 }
 
-function renderDashboardOrgTree() {
-  const roots = getRootOrgs();
-  if (!roots.length) return '<div class="empty-state">暂无组织架构</div>';
-  return `<div class="dashboard-org-tree">${roots.map((org) => renderDashboardOrgTreeNode(org)).join("")}</div>`;
-}
-
 function renderDashboardPage() {
   const computerCount = state.computers.length;
   const inUseCount = state.computers.filter((computer) => computer.status === "in_use").length;
@@ -4741,17 +4618,6 @@ function renderDashboardPage() {
       <section class="data-panel dashboard-panel-animate"><div class="section-heading"><div><h2>最近入库物资</h2><span>库存增加记录</span></div><button class="text-button" data-action="navigate" data-page="inventory">IT 物资 ›</button></div>${renderDashboardRecentInboundList()}</section>
     </div>
   `;
-}
-
-function renderRootOrgMetrics() {
-  const roots = getRootOrgs();
-  if (!roots.length) return '<div class="empty-state">暂无组织架构</div>';
-  return `<div class="metric-strip">${roots
-    .map((org) => {
-      const summary = getOrgSummary(org.id);
-      return `<div class="metric-line"><span>${escapeHtml(org.name)}</span><strong>${summary.employees} 人</strong><span class="secondary-text">${summary.computers} 台办公终端</span></div>`;
-    })
-    .join("")}</div>`;
 }
 
 function renderComputersPage() {
@@ -5063,197 +4929,6 @@ function renderLeftEmployeeTable(employees) {
         </tbody>
       </table>
     </div>
-  `;
-}
-
-function inventoryTreeRowsLegacy() {
-  const nodes = buildInventoryTreeNodes();
-  if (!nodes.length) return "";
-
-  return nodes
-    .map(({ type, brands }) => {
-      const typeQuantity = brands.reduce(
-        (sum, brand) =>
-          sum + brand.models.reduce((brandSum, model) => brandSum + Math.max(0, Number(model.quantity || 0)), 0),
-        0,
-      );
-      const typeModelCount = brands.reduce((sum, brand) => sum + brand.models.length, 0);
-      return `
-        <section class="inventory-node inventory-type-node">
-          <div class="inventory-node-row">
-            <div class="inventory-node-main">
-              <strong>${escapeHtml(type.name)}</strong>
-              <span>${brands.length} 个品牌 / ${typeModelCount} 个型号 / ${typeQuantity} ${escapeHtml(type.unit || "件")}</span>
-            </div>
-            <div class="inline-actions">
-              <button class="text-button" data-action="open-type" data-id="${escapeHtml(type.id)}">编辑类型</button>
-              <button class="text-button" data-action="open-inventory-brand" data-type-id="${escapeHtml(type.id)}">新增品牌</button>
-              <button class="text-button danger" data-action="delete-type" data-id="${escapeHtml(type.id)}" ${
-                isProtectedInventoryType(type) ? 'disabled title="系统保留类型不可删除"' : ""
-              }>删除</button>
-            </div>
-          </div>
-          <div class="inventory-children">
-            ${
-              brands.length
-                ? brands
-                    .map((brand) => {
-                      const brandQuantity = brand.models.reduce(
-                        (sum, model) => sum + Math.max(0, Number(model.quantity || 0)),
-                        0,
-                      );
-                      return `
-                        <div class="inventory-node inventory-brand-node">
-                          <div class="inventory-node-row">
-                            <div class="inventory-node-main">
-                              <strong>${escapeHtml(brand.name)}</strong>
-                              <span>${brand.models.length} 个型号 / ${brandQuantity} ${escapeHtml(type.unit || "件")}</span>
-                            </div>
-                            <div class="inline-actions">
-                              <button class="text-button" data-action="open-inventory-brand" data-type-id="${escapeHtml(
-                                type.id,
-                              )}" data-id="${escapeHtml(brand.id)}">编辑品牌</button>
-                              <button class="text-button" data-action="open-inventory-model" data-type-id="${escapeHtml(
-                                type.id,
-                              )}" data-brand-id="${escapeHtml(brand.id)}">新增型号</button>
-                              <button class="text-button danger" data-action="delete-inventory-brand" data-id="${escapeHtml(
-                                brand.id,
-                              )}">删除</button>
-                            </div>
-                          </div>
-                          <div class="inventory-model-list">
-                            ${
-                              brand.models.length
-                                ? brand.models
-                                    .map(
-                                      (model) => {
-                                        const modelMeta = inventoryModelDisplayMeta(type, model);
-                                        return `
-                                        <div class="inventory-model-row">
-                                          <div><span>${escapeHtml(model.name)}</span><small>${escapeHtml(modelMeta)}</small></div>
-                                          <div class="inline-actions">
-                                            <button class="text-button" data-action="open-inventory-model" data-type-id="${escapeHtml(
-                                              type.id,
-                                            )}" data-brand-id="${escapeHtml(brand.id)}" data-id="${escapeHtml(
-                                              model.id,
-                                            )}">编辑</button>
-                                            <button class="text-button danger" data-action="delete-inventory-model" data-id="${escapeHtml(
-                                              model.id,
-                                            )}">删除</button>
-                                          </div>
-                                        </div>
-                                      `;
-                                      },
-                                    )
-                                    .join("")
-                                : '<div class="inventory-empty">当前没有型号记录</div>'
-                            }
-                          </div>
-                        </div>
-                      `;
-                    })
-                    .join("")
-                : '<div class="inventory-empty">当前没有品牌记录</div>'
-            }
-          </div>
-        </section>
-      `;
-    })
-    .join("");
-}
-
-function renderInventoryPageLegacy() {
-  const totalQuantity = state.inventoryModels.reduce(
-    (sum, model) => sum + Math.max(0, Number(model.quantity || 0)),
-    0,
-  );
-  const nodes = buildInventoryTreeNodes();
-  const visibleBrandCount = nodes.reduce((sum, node) => sum + node.brands.length, 0);
-  const visibleModelCount = nodes.reduce(
-    (sum, node) => sum + node.brands.reduce((brandSum, brand) => brandSum + brand.models.length, 0),
-    0,
-  );
-  const visibleQuantity = nodes.reduce(
-    (sum, node) =>
-      sum +
-      node.brands.reduce(
-        (brandSum, brand) =>
-          brandSum + brand.models.reduce((modelSum, model) => modelSum + Math.max(0, Number(model.quantity || 0)), 0),
-        0,
-      ),
-    0,
-  );
-  return `
-    <div class="page-intro">
-      <div><h2>IT物资</h2><p>按设备类型、品牌、型号管理未分配的显示屏、鼠标、键盘等办公物资库存。</p></div>
-      <div class="toolbar-actions">
-        <button class="secondary-button" data-action="open-inventory-import">＋ 导入物资</button>
-        <button class="secondary-button" data-action="export-inventory">导出筛选</button>
-        <button class="primary-button" data-action="open-type">新增类型</button>
-        <button class="secondary-button" data-action="navigate" data-page="dashboard">返回工作台</button>
-      </div>
-    </div>
-    <div class="toolbar">
-      <div class="toolbar-actions">
-        <label class="search-box"><span>⌕</span><input data-filter="inventorySearch" value="${escapeHtml(
-          filterSearchDraftValue("inventorySearch"),
-        )}" placeholder="搜索类型、品牌或型号..." /></label>
-        <button class="secondary-button" data-action="apply-inventory-search">查询</button>
-        <label class="select-box"><select data-filter="inventoryType">
-          ${inventoryTypeFilterOptions()
-            .map(
-              (option) =>
-                `<option value="${escapeHtml(option.value)}" ${
-                  (state.filters.inventoryType || "") === option.value ? "selected" : ""
-                }>${escapeHtml(option.label)}</option>`,
-            )
-            .join("")}
-        </select></label>
-        <label class="select-box"><select data-filter="inventoryBrand">
-          ${inventoryBrandFilterOptions(state.filters.inventoryType || "")
-            .map(
-              (option) =>
-                `<option value="${escapeHtml(option.value)}" ${
-                  (state.filters.inventoryBrand || "") === option.value ? "selected" : ""
-                }>${escapeHtml(option.label)}</option>`,
-            )
-            .join("")}
-        </select></label>
-        ${
-          state.filters.inventorySearch || state.filters.inventoryType || state.filters.inventoryBrand
-            ? '<button class="secondary-button" data-action="clear-inventory-filters">清除筛选</button>'
-            : ""
-        }
-      </div>
-      <span class="secondary-text">显示 ${visibleModelCount} / ${state.inventoryModels.length} 个型号 · ${visibleBrandCount} / ${state.inventoryBrands.length} 个品牌 · ${visibleQuantity} / ${totalQuantity} 件</span>
-    </div>
-    <div class="stats-grid compact">
-      <div class="stat-card"><div class="stat-label"><span>设备类型</span><span class="stat-mark">T</span></div><div class="stat-value">${
-        state.nonAssetTypes.length
-      }</div><div class="stat-foot">库存一级分组</div></div>
-      <div class="stat-card"><div class="stat-label"><span>品牌组</span><span class="stat-mark">B</span></div><div class="stat-value">${
-        state.inventoryBrands.length
-      }</div><div class="stat-foot">库存二级分组</div></div>
-      <div class="stat-card"><div class="stat-label"><span>型号组</span><span class="stat-mark">M</span></div><div class="stat-value">${
-        state.inventoryModels.length
-      }</div><div class="stat-foot">库存最下级条目</div></div>
-      <div class="stat-card"><div class="stat-label"><span>可用数量</span><span class="stat-mark">Q</span></div><div class="stat-value">${totalQuantity}</div><div class="stat-foot">未分配库存总量</div></div>
-    </div>
-    <section class="section-block">
-      <div class="section-heading"><div><h2>类型 / 品牌 / 型号 / 数量</h2><span>已分配到人员名下的物资不在此库存中体现。</span></div></div>
-      <div class="data-panel inventory-panel">${inventoryTreeRows() || '<div class="empty-state">当前没有库存分组</div>'}</div>
-    </section>
-    <section class="section-block">
-      <div class="section-heading">
-        <div><h2>采购入库信息</h2><span>${state.inventoryPurchaseLogs.length} 条采购入库记录，普通物资不在库存型号上显示入库日期</span></div>
-        <div class="toolbar-actions">
-          <button class="secondary-button" data-action="export-inventory-purchase" ${
-            state.inventoryPurchaseLogs.length ? "" : "disabled"
-          }>导出入库表</button>
-        </div>
-      </div>
-      <div class="data-panel">${renderInventoryPurchaseTable(state.inventoryPurchaseLogs)}</div>
-    </section>
   `;
 }
 
@@ -5999,37 +5674,6 @@ function renderInventoryPurchaseTable(logs) {
   return sections.join("");
 }
 
-function renderInventoryMovementTable(logs) {
-  if (!logs.length) return '<div class="empty-state">暂无 IT 物资变动日志</div>';
-  return `
-    <div class="table-wrap">
-      <table class="audit-table">
-        <thead><tr><th>时间</th><th>增减</th><th>物资</th><th>数量</th><th>来源</th><th>流向</th><th>标注</th><th>操作</th></tr></thead>
-        <tbody>
-          ${logs
-            .map(
-              (log) => `<tr>
-                <td class="audit-time">${escapeHtml(formatDateTime(log.occurredAt))}</td>
-                <td><span class="audit-action ${inventoryDirectionClass(log.direction)}">${escapeHtml(
-                  inventoryDirectionLabel(log.direction),
-                )}</span></td>
-                <td><div class="primary-text">${escapeHtml(log.typeName || "未分类物资")}</div><div class="secondary-text">${escapeHtml(
-                  [log.brandName, log.modelName].filter(Boolean).join(" / ") || "未填写品牌型号",
-                )}</div></td>
-                <td>${escapeHtml(log.quantity)}</td>
-                <td>${escapeHtml(log.sourceLabel || "—")}</td>
-                <td>${escapeHtml(log.targetLabel || "—")}</td>
-                <td><span class="audit-summary">${escapeHtml(log.note || "—")}</span></td>
-                <td><span class="secondary-text">只读</span></td>
-              </tr>`,
-            )
-            .join("")}
-        </tbody>
-      </table>
-    </div>
-  `;
-}
-
 function openInventoryBrandModal(typeId, id = "") {
   const type = getType(typeId);
   if (!type) return;
@@ -6432,49 +6076,6 @@ function renderUnassignedEmployeeBlock(employees) {
         ${employees.map((employee) => renderEmployeeTreeRow(employee)).join("")}
       </div>
     </section>
-  `;
-}
-
-function renderEmployeeTable(employees, withActions) {
-  if (!employees.length) return '<div class="empty-state">暂无符合条件的人员记录</div>';
-  return `
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>人员</th><th>组织 / 部门</th><th>岗位</th><th>办公设备清单</th><th>状态</th>${withActions ? "<th>操作</th>" : ""}</tr></thead>
-        <tbody>
-          ${employees
-            .map(
-              (employee) => `<tr>
-                <td><div class="primary-text">${escapeHtml(employee.name)}</div><div class="secondary-text mono">${escapeHtml(
-                  employee.employeeNo,
-                )}</div></td>
-                <td><div class="primary-text">${escapeHtml(orgName(employee.orgId))}</div><div class="secondary-text">${escapeHtml(
-                  orgPathName(employee.orgId),
-                )}</div></td>
-                <td>${escapeHtml(employee.position || "—")}</td>
-                <td>${deviceChips(employee)}</td>
-                <td>${statusPill(employee.status)}</td>
-                ${
-                  withActions
-                    ? `<td><div class="inline-actions">
-                        <button class="text-button" data-action="manage-devices" data-id="${escapeHtml(employee.id)}">设备</button>
-                        <button class="text-button" data-action="open-employee" data-id="${escapeHtml(employee.id)}">编辑</button>
-                        ${
-                          hasPermission("employees", "update") && employee.status !== "left"
-                            ? `<button class="text-button danger" data-action="open-employee-offboard" data-id="${escapeHtml(
-                                employee.id,
-                              )}">${employee.status === "shared" ? "删除" : "办理离职"}</button>`
-                            : ""
-                        }
-                      </div></td>`
-                    : ""
-                }
-              </tr>`,
-            )
-            .join("")}
-        </tbody>
-      </table>
-    </div>
   `;
 }
 
@@ -6945,15 +6546,35 @@ async function handleScrapSubmit(form) {
 }
 
 function openModal(content, wide = false) {
+  const root = document.querySelector("#modalRoot");
+  root.innerHTML = `<dialog class="modal-dialog" data-action="close-modal">
+    <div class="modal-panel ${wide ? "wide" : ""}">${content}</div>
+  </dialog>`;
+  const dialog = root.querySelector("dialog");
   document.body.classList.add("modal-open");
-  document.querySelector("#modalRoot").innerHTML = `<div class="modal-backdrop" data-action="close-modal">
-    <aside class="modal-panel ${wide ? "wide" : ""}" role="dialog" aria-modal="true">${content}</aside>
-  </div>`;
+  if (!dialog) return;
+  // 原生 <dialog> 提供 ESC 关闭、焦点陷阱与顶层渲染；关闭时统一清理内容。
+  dialog.addEventListener("close", () => {
+    if (document.querySelector("#modalRoot dialog") === dialog) {
+      root.innerHTML = "";
+      document.body.classList.remove("modal-open");
+    }
+  });
+  if (typeof dialog.showModal === "function") {
+    dialog.showModal();
+  } else {
+    dialog.setAttribute("open", "");
+  }
 }
 
 function closeModal() {
+  const root = document.querySelector("#modalRoot");
+  const dialog = root.querySelector("dialog");
+  if (dialog && dialog.open && typeof dialog.close === "function") {
+    dialog.close();
+  }
+  root.innerHTML = "";
   document.body.classList.remove("modal-open");
-  document.querySelector("#modalRoot").innerHTML = "";
 }
 
 function modalHeader(title, description) {
@@ -8787,19 +8408,6 @@ function exportInventory() {
   showToast(`已导出 ${rows.length} 条 IT 物资明细`);
 }
 
-function exportInventoryMovementLogsLegacy() {
-  const logs = state.inventoryMovementLogs || [];
-  if (!logs.length) return showToast("当前没有可导出的物资变动日志", true);
-  downloadExcel(`办公资产-IT物资变动日志-${exportDateStamp()}.xls`, [
-    {
-      name: "物资变动日志",
-      headers: ["时间", "增减", "设备类型", "品牌", "型号", "数量", "来源", "流向", "相关人员编号", "相关人员姓名", "标注"],
-      rows: inventoryMovementLogExportRows(logs),
-    },
-  ]);
-  showToast(`已导出 ${logs.length} 条物资变动日志`);
-}
-
 function exportInventoryMovementLogs() {
   const logs = state.inventoryMovementLogs || [];
   if (!logs.length) return showToast("当前没有可导出的物资变动日志", true);
@@ -8858,27 +8466,6 @@ function exportFlowRecords() {
     },
   ]);
   showToast(`已导出 ${logs.length} 条物资流转记录`);
-}
-
-function inventoryPurchaseLogExportRows(logs) {
-  return [...logs]
-    .sort((a, b) =>
-      String(b.inboundDate || b.createdAt || "").localeCompare(String(a.inboundDate || a.createdAt || "")),
-    )
-    .map((log) => [
-      log.inboundDate || "",
-      log.typeName || "",
-      log.brandName || "",
-      log.modelName || "",
-      log.quantity,
-      log.cpu || "",
-      log.memory || "",
-      log.storage || "",
-      log.gpu || "",
-      log.sourceLabel || "",
-      log.note || "",
-      log.createdAt || "",
-    ]);
 }
 
 function exportInventoryPurchaseLogs() {
@@ -9172,7 +8759,8 @@ document.addEventListener("click", (event) => {
   }
 
   if (action === "close-modal") {
-    if (actionElement.classList.contains("modal-backdrop") && event.target !== actionElement) return;
+    // 点击对话框本体（即原生 ::backdrop 区域）才关闭；点击面板内部不关闭。
+    if (actionElement.tagName === "DIALOG" && event.target !== actionElement) return;
     closeModal();
     return;
   }
@@ -11608,23 +11196,6 @@ function renderServiceKnowledge() {
           )
           .join("")}</tbody></table></div>`
       : serviceTableEmpty("暂无知识文章")
-  }</section>`;
-}
-
-function renderServiceForms() {
-  const service = serviceState();
-  return `<section class="data-panel"><div class="section-heading"><div><h2>服务表单</h2><span>为工单、变更和问题定义业务字段、类型、必填规则和选项。</span></div>
-    ${hasPermission("forms", "create") ? '<button class="primary-button" data-action="open-form-designer">新建表单</button>' : ""}
-  </div>
-  ${
-    service.forms.length
-      ? `<div class="table-wrap"><table><thead><tr><th>编码</th><th>名称</th><th>业务类型</th><th>版本</th><th>字段数</th><th>更新时间</th><th>操作</th></tr></thead><tbody>${service.forms
-          .map(
-            (item) =>
-              `<tr><td>${escapeHtml(item.code || "")}</td><td>${escapeHtml(item.name || "")}</td><td>${escapeHtml(serviceRecordTypeLabel(item.recordType))}</td><td>${escapeHtml(item.version || 1)}</td><td>${escapeHtml((item.fields || []).length)}</td><td>${escapeHtml(formatDateTime(item.updatedAt || ""))}</td><td>${hasPermission("forms", "update") ? `<button class="text-button" data-action="open-service-form" data-id="${escapeHtml(item.id)}">编辑</button>` : "—"}</td></tr>`,
-          )
-          .join("")}</tbody></table></div>`
-      : serviceTableEmpty("暂无表单")
   }</section>`;
 }
 

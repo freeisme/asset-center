@@ -859,7 +859,7 @@ class EmployeeWorkflowUiTests(TestCase):
         self.assertIn("离职办理回收入库", service)
         self.assertIn("current_keys != submitted_key_set", service)
         self.assertIn("@current_item_count = {len(plan)}", service)
-        self.assertIn("allocation.stock_adjusted = 1", service)
+        self.assertIn("_recovery_catalog_sql", service)
         self.assertIn("trigger_action", service)
         self.assertIn("targetEmployeeName", app)
         self.assertIn("leftEmployeeDeviceActionText", app)
@@ -1043,12 +1043,11 @@ class InventoryRecoveryRegressionTests(TestCase):
         )
         self.assertIn("allocation_groups: dict[int, dict[str, int]]", offboard_source)
         self.assertIn("inventory_model_id <=> {group_model_id_sql}", offboard_source)
-        self.assertIn("GROUP BY allocation.inventory_model_id", offboard_source)
-        self.assertIn("allocation.stock_adjusted = 1", offboard_source)
-        # 登记物资（未扣库存）现在同样回收入库，缺少型号时自动补齐目录。
-        self.assertIn("@allocation_recovery_quantity = 0", offboard_source)
+        # 回收统一走单一路径：解析（必要时新建）库存型号后按使用记录数量入库。
+        self.assertIn("@recovery_model_id", offboard_source)
         self.assertIn("AND @recovery_model_id > 0", offboard_source)
         self.assertIn("_recovery_catalog_sql", offboard_source)
+        self.assertNotIn("@allocation_recovery_quantity", offboard_source)
         self.assertNotIn("显示屏品牌型号重复", server_source := (ROOT / "server.py").read_text(encoding="utf-8"))
         self.assertNotIn("非资产设备品牌型号重复", server_source)
 
@@ -1465,7 +1464,8 @@ class RecoveryInboundTests(TestCase):
         self.assertIn("未填写品牌", service)
         self.assertIn("未填写型号", service)
         # 登记物资（未扣库存）同样入库，不再以 stock_adjusted 作为入库条件
-        self.assertIn("@allocation_recovery_quantity = 0", offboard)
+        self.assertIn("SELECT {recovery_warehouse_id_sql}, @recovery_model_id, {quantity}", offboard)
+        self.assertNotIn("@allocation_recovery_quantity", offboard)
         self.assertIn("AND @recovery_model_id > 0", offboard)
         self.assertNotIn("AND {stock_adjusted} = 1", offboard)
         self.assertIn("'leave_recovery'", offboard)

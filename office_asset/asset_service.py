@@ -75,10 +75,6 @@ class AssetService:
             if actor_employee_id <= 0 or actor_employee_id != self.db.integer(employee_id, 0):
                 raise self.forbidden_error("This account can only access its own asset records.")
 
-    def _assert_inventory_global_operation(self, context: dict) -> None:
-        if self._permission_scope(context) not in {"all"}:
-            raise self.forbidden_error("This inventory operation requires an all-data permission scope.")
-
     def _assert_inventory_issue_scope(self, context: dict) -> None:
         if self._permission_scope(context) not in {"all", "organization"}:
             raise self.forbidden_error(
@@ -4686,118 +4682,19 @@ class AssetService:
                 statements.extend(
                     [
                         f"""
-                        SET @allocation_recovery_quantity = (
-                          SELECT COALESCE(SUM(quantity), 0)
-                          FROM inventory_allocation_history
-                          WHERE allocation_type = {self.db.quote(allocation_type)}
-                            AND employee_id = {employee_id_int}
-                            AND usage_record_id = {item_id}
-                            AND status = 'active'
-                            AND stock_adjusted = 1
-                        )
-                        """,
-                        f"""
-                        SET @recovery_quantity = IF(
-                          @allocation_recovery_quantity = 0,
-                          {quantity},
-                          @allocation_recovery_quantity
-                        )
-                        """,
-                        f"""
-                        INSERT INTO inventory_warehouse_stock (warehouse_id, model_id, quantity)
-                        SELECT
-                          {recovery_warehouse_id_sql},
-                          allocation.inventory_model_id,
-                          SUM(allocation.quantity)
-                        FROM inventory_allocation_history allocation
-                        WHERE allocation.allocation_type = {self.db.quote(allocation_type)}
-                          AND allocation.employee_id = {employee_id_int}
-                          AND allocation.usage_record_id = {item_id}
-                          AND allocation.status = 'active'
-                          AND allocation.stock_adjusted = 1
-                          AND allocation.inventory_model_id IS NOT NULL
-                          AND @active_allocation_count > 0
-                          AND @offboard_allowed = 1
-                        GROUP BY allocation.inventory_model_id
-                        ON DUPLICATE KEY UPDATE
-                          quantity = quantity + VALUES(quantity)
-                        """,
-                        f"""
                         INSERT INTO inventory_warehouse_stock (warehouse_id, model_id, quantity)
                         SELECT {recovery_warehouse_id_sql}, @recovery_model_id, {quantity}
                         FROM DUAL
-                        WHERE @allocation_recovery_quantity = 0
-                          AND @recovery_model_id > 0
+                        WHERE @recovery_model_id > 0
                           AND @offboard_allowed = 1
                         ON DUPLICATE KEY UPDATE
                           quantity = quantity + VALUES(quantity)
-                        """,
-                        f"""
-                        UPDATE it_inventory_model model
-                        JOIN (
-                          SELECT allocation.inventory_model_id AS model_id,
-                                 SUM(allocation.quantity) AS quantity
-                          FROM inventory_allocation_history allocation
-                          WHERE allocation.allocation_type = {self.db.quote(allocation_type)}
-                            AND allocation.employee_id = {employee_id_int}
-                            AND allocation.usage_record_id = {item_id}
-                            AND allocation.status = 'active'
-                            AND allocation.stock_adjusted = 1
-                            AND allocation.inventory_model_id IS NOT NULL
-                            AND @active_allocation_count > 0
-                            AND @offboard_allowed = 1
-                          GROUP BY allocation.inventory_model_id
-                        ) recovered
-                          ON recovered.model_id = model.model_id
-                        SET model.quantity = model.quantity + recovered.quantity
                         """,
                         f"""
                         UPDATE it_inventory_model
                         SET quantity = quantity + {quantity}
                         WHERE model_id = @recovery_model_id
-                          AND @allocation_recovery_quantity = 0
-                          AND @recovery_model_id > 0
                           AND @offboard_allowed = 1
-                        """,
-                        f"""
-                        INSERT INTO inventory_movement_log (
-                          movement_direction, type_name, brand_name, model_name, quantity,
-                          source_label, source_warehouse_id, target_label, target_warehouse_id,
-                          note, related_employee_no, related_employee_name, trigger_action
-                        )
-                        SELECT
-                          'increase',
-                          type_row.type_name,
-                          brand.brand_name,
-                          model.model_name,
-                          SUM(allocation.quantity),
-                          {self.db.quote(employee_label)},
-                          NULL,
-                          warehouse.warehouse_name,
-                          warehouse.warehouse_id,
-                          {self.db.quote(note)},
-                          {self.db.quote(employee_no)},
-                          {self.db.quote(employee_name)},
-                          'leave_recovery'
-                        FROM inventory_allocation_history allocation
-                        JOIN it_inventory_model model
-                          ON model.model_id = allocation.inventory_model_id
-                        JOIN it_inventory_brand brand
-                          ON brand.brand_id = model.brand_id
-                        JOIN non_asset_type type_row
-                          ON type_row.non_asset_type_id = model.non_asset_type_id
-                        JOIN inventory_warehouse warehouse
-                          ON warehouse.warehouse_id = {recovery_warehouse_id_sql}
-                        WHERE allocation.allocation_type = {self.db.quote(allocation_type)}
-                          AND allocation.employee_id = {employee_id_int}
-                          AND allocation.usage_record_id = {item_id}
-                          AND allocation.status = 'active'
-                          AND allocation.stock_adjusted = 1
-                          AND allocation.inventory_model_id IS NOT NULL
-                          AND @active_allocation_count > 0
-                          AND @offboard_allowed = 1
-                        GROUP BY model.model_id, type_row.type_name, brand.brand_name,
-                                 model.model_name, warehouse.warehouse_id, warehouse.warehouse_name
                         """,
                         f"""
                         INSERT INTO inventory_movement_log (
@@ -4810,7 +4707,7 @@ class AssetService:
                           COALESCE(type_row.type_name, {self.db.quote(type_name)}),
                           COALESCE(brand.brand_name, {self.db.quote(brand_name)}),
                           COALESCE(model.model_name, {self.db.quote(model_name)}),
-                          @recovery_quantity,
+                          {quantity},
                           {self.db.quote(employee_label)},
                           NULL,
                           warehouse.warehouse_name,
@@ -4827,7 +4724,6 @@ class AssetService:
                         LEFT JOIN non_asset_type type_row
                           ON type_row.non_asset_type_id = model.non_asset_type_id
                         WHERE warehouse.warehouse_id = {recovery_warehouse_id_sql}
-                          AND @allocation_recovery_quantity = 0
                           AND @recovery_model_id > 0
                           AND @offboard_allowed = 1
                         """,

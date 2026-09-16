@@ -803,41 +803,6 @@ class ServiceManagementService:
             """
         )
 
-    def ticket_extension_row(self, ticket_id: object) -> dict:
-        return dict(
-            self.db.json(
-                f"""
-                SELECT JSON_OBJECT(
-                  'formId', COALESCE(CAST(extension.form_id AS CHAR), ''),
-                  'formCode', COALESCE(form.form_code, ''),
-                  'formName', COALESCE(form.form_name, ''),
-                  'customFields', extension.custom_fields,
-                  'slaPolicyId', COALESCE(CAST(extension.sla_policy_id AS CHAR), ''),
-                  'slaStartedAt', COALESCE(CAST(extension.sla_started_at AS CHAR), ''),
-                  'responseDueAt', COALESCE(CAST(extension.response_due_at AS CHAR), ''),
-                  'resolutionDueAt', COALESCE(CAST(extension.resolution_due_at AS CHAR), ''),
-                  'approvalStatus', extension.approval_status,
-                  'slaState', CASE
-                    WHEN extension.resolution_due_at IS NULL THEN 'not_configured'
-                    WHEN ticket.status IN ('closed', 'cancelled') THEN 'stopped'
-                    WHEN CURRENT_TIMESTAMP > extension.resolution_due_at THEN 'breached'
-                    ELSE 'running'
-                  END,
-                  'slaRemainingMinutes', CASE
-                    WHEN extension.resolution_due_at IS NULL THEN NULL
-                    ELSE TIMESTAMPDIFF(MINUTE, CURRENT_TIMESTAMP, extension.resolution_due_at)
-                  END
-                )
-                FROM service_ticket_extension extension
-                JOIN itil_ticket ticket ON ticket.ticket_id = extension.ticket_id
-                LEFT JOIN service_form form ON form.form_id = extension.form_id
-                WHERE extension.ticket_id = {self.db.integer(ticket_id, 0)}
-                """,
-                None,
-            )
-            or {}
-        )
-
     def _record_owner(self, record_type: str, record_id: int) -> tuple[int, int]:
         if record_type == "ticket":
             row = self.db.json(
