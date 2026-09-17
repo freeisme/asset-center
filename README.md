@@ -151,6 +151,7 @@ node --check web\app.js
 - [Gitea 和更新服务](docs/deployment/gitea.md)
 - [GitHub 发布流程](docs/releases/github-release.md)
 - [安全检查](docs/security/review.md)
+- [扫描整改：Nginx 加固、端口收敛与 CSRF 复测](docs/security/tscanplus-remediation.md)
 - [前端和接口说明](web/README.md)
 - [GitHub Wiki](https://github.com/freeisme/asset-center/wiki)
 

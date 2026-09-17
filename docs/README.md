@@ -18,6 +18,7 @@
 
 - [GitHub 发布流程](releases/github-release.md)
 - [安全检查和运维注意事项](security/review.md)
+- [扫描整改：Nginx 加固、端口收敛与 CSRF 复测](security/tscanplus-remediation.md)
 - [版本说明](../VERSION_NOTES.md)
 
 根目录的 `README.md` 提供项目概览、目录说明和常用命令。

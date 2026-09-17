@@ -150,3 +150,15 @@
 [ ] 更新构建或健康检查失败后恢复之前的应用版本
 [ ] database/bootstrap/21_security_hardening.sql 已在测试库成功执行
 ```
+
+## 外部扫描复核（2026-09）
+
+对生产服务器的一次外部扫描命中的是 OpenResty 的静态占位站点，而不是应用本身。
+复核结论、Nginx 层加固配置、端口收敛步骤和 CSRF 复测证据见
+[扫描整改说明](tscanplus-remediation.md)。要点：
+
+- 应用本身已经下发 CSP、X-Frame-Options 等安全响应头，缺头的是代理层占位站点；
+- `server_tokens off` 只去掉版本号，彻底隐藏 `Server` 头需要在代理层使用
+  `more_clear_headers Server`（生产 OpenResty 已编译 headers-more 模块）；
+- 扫描报告的“CSRF 漏洞”是误报：伪造 `Referer` 后返回的 `200` 来自静态页面，
+  写接口在缺少或使用错误令牌时返回 `403 CSRF_INVALID`。

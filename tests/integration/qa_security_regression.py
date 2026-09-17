@@ -132,7 +132,7 @@ def cleanup() -> None:
                SELECT change_id FROM itil_change WHERE title LIKE '[QA security]%'
              ));
         DELETE FROM itil_change WHERE title LIKE '[QA security]%';
-        DELETE FROM itil_ticket WHERE title = '[QA security] no csrf';
+        DELETE FROM itil_ticket WHERE title LIKE '[QA security]%';
         DELETE FROM service_form_field
           WHERE form_id IN (SELECT form_id FROM service_form WHERE form_code LIKE '{PREFIX}%');
         DELETE FROM service_form_permission
@@ -425,6 +425,41 @@ def main() -> int:
             csrf=False,
         )
         assert status == 403
+
+        # 扫描器式复测：伪造外部 Referer/Origin。Referer 不是 CSRF 判定依据，
+        # 缺少令牌或令牌错误都必须被拒绝，带正确令牌的写请求则应正常受理。
+        forged_origin = {
+            "Referer": "http://scanner.example.net/",
+            "Origin": "http://scanner.example.net",
+        }
+        status, _ = admin.request(
+            "POST",
+            "/api/tickets",
+            {"title": "[QA security] forged referer without csrf", "description": "x"},
+            csrf=False,
+            extra_headers=forged_origin,
+        )
+        assert status == 403, status
+        status, _ = admin.request(
+            "POST",
+            "/api/tickets",
+            {"title": "[QA security] forged referer wrong csrf", "description": "x"},
+            csrf=False,
+            extra_headers={**forged_origin, "X-CSRF-Token": "wrong-token"},
+        )
+        assert status == 403, status
+        status, payload = admin.request(
+            "POST",
+            "/api/tickets",
+            {
+                "title": "[QA security] forged referer with csrf",
+                "description": "x",
+            },
+            extra_headers=forged_origin,
+        )
+        assert status in {200, 201}, (status, payload)
+        status, _ = admin.request("GET", "/api/state", extra_headers=forged_origin)
+        assert status == 200, status
 
         _, role = admin.request(
             "POST",
@@ -1372,7 +1407,7 @@ def main() -> int:
         _, custom_return = admin.request(
             "POST",
             f"/api/inventory/allocations/{custom_allocation['allocationId']}/return",
-            {"notes": "QA custom registration return"},
+            {"warehouseId": warehouse_a1, "notes": "QA custom registration return"},
             200,
         )
         assert custom_return["status"] == "returned"
@@ -1543,7 +1578,7 @@ def main() -> int:
 
         print("QA_REGRESSION_PASS")
         print(
-            "checks=role_creation,none_scope,csrf,state_write_retired,"
+            "checks=role_creation,none_scope,csrf,csrf_scanner_referer,state_write_retired,"
             "form_visibility,form_permission_endpoint,form_workflow_binding,"
             "approval_gate,approval_status_sync,computer_movement_history,"
             "assignment_idempotency,assignment_reassignment_audit,own_asset_scope,"

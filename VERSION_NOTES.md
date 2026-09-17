@@ -4,6 +4,34 @@
 可部署版本必须使用未占用的 SemVer 注释标签，并在标签对应提交中包含本文件的同名
 版本标题，例如 `v1.1.0`。
 
+## v2.7.2
+
+发布日期：2026-09-17
+
+### 加固与修复（无功能变更）
+
+- `deploy/nginx/office-asset-mgmt.conf` 补齐代理层配置：`server_tokens off`、
+  `more_clear_headers Server`，以及与后端一致的一组安全响应头
+  （CSP、X-Content-Type-Options、X-Frame-Options、X-XSS-Protection、Referrer-Policy、
+  Permissions-Policy、COOP、CORP），并保留没有 headers-more 模块时的替代写法。
+- 新增 [扫描整改说明](docs/security/tscanplus-remediation.md)：复核外部扫描命中的其实是
+  OpenResty 静态占位站点，给出端口仅本机访问的操作步骤、代理层加固步骤和 CSRF 复测证据；
+  结论是该条 CSRF 为误报。
+- 安全集成回归新增 `csrf_scanner_referer` 检查：按扫描器方式伪造 `Referer`/`Origin`，
+  验证缺少令牌与令牌错误都返回 `403`，带正确令牌的写请求正常受理。
+- 修复安全集成回归自 v2.6.0 起的失败用例：物资回收必须显式指定目标仓库后，
+  `POST /api/inventory/allocations/<id>/return` 的用例缺少 `warehouseId`，现已补上。
+
+### 数据库与兼容
+
+- 不新增数据库迁移，接口与业务规则不变，后端代码未改动。
+
+### 验证与回滚
+
+- 安全集成回归全部通过，输出包含 `QA_REGRESSION_PASS` 与 `csrf_scanner_referer`。
+- 代理层配置已在生产实际使用的 OpenResty 版本上完成 `nginx -t` 语法校验。
+- 回滚到 v2.7.1 不需要数据库操作；回滚后代理层响应头需要单独恢复。
+
 ## v2.7.1
 
 发布日期：2026-09-16
