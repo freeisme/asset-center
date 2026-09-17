@@ -6,6 +6,7 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
     environment:
+      TZ: ${TZ:-Asia/Shanghai}
       MYSQL_DATABASE: ${DB_NAME:-office_asset_mgmt}
       MYSQL_USER: ${DB_USER:-office_asset_app}
       MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
@@ -31,6 +32,7 @@ services:
       dockerfile: Dockerfile
     restart: "no"
     environment:
+      TZ: ${TZ:-Asia/Shanghai}
       DB_HOST: db
       DB_PORT: "3306"
       DB_NAME: ${DB_NAME:-office_asset_mgmt}
@@ -49,6 +51,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
+      TZ: ${TZ:-Asia/Shanghai}
       DB_HOST: db
       DB_PORT: "3306"
       DB_NAME: ${DB_NAME:-office_asset_mgmt}

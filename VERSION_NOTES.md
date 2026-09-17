@@ -4,6 +4,42 @@
 可部署版本必须使用未占用的 SemVer 注释标签，并在标签对应提交中包含本文件的同名
 版本标题，例如 `v1.1.0`。
 
+## v2.7.3
+
+发布日期：2026-09-17
+
+### 修复
+
+- 全栈时区由 UTC 切换为 `Asia/Shanghai`（UTC+8）：此前宿主机、应用容器、MySQL 均为
+  UTC，而库中时间列全是 `DATETIME`（无 `TIMESTAMP`），MySQL 不做时区换算、前端也只按
+  字符串裁剪，用户看到的时间比北京时间少 8 小时。
+- `compose.yaml` 的 `db`、`migrate`、`app` 三个服务新增 `TZ: ${TZ:-Asia/Shanghai}`，
+  容器时区可再用环境变量覆盖。
+- 新增一次性数据迁移脚本 `database/manual/20260917_001_timezone_utc_to_asia_shanghai.sql`：
+  按表整体把历史 `DATETIME` 值后移 8 小时，带执行标记表保证幂等，重复执行会因主键冲突中止。
+- 新增 [时区迁移说明](docs/development/timezone-migration.md)，记录迁移范围判定方法、
+  执行步骤、回滚方式，以及在演练中发现的两个陷阱：
+  逐列平移会违反行内 `CHECK` 约束；条件平移会触发 `ON UPDATE CURRENT_TIMESTAMP`
+  把 `updated_at` 刷成当前时间（脚本中已用 `updated_at = updated_at` 规避）。
+- 例外处理：`inventory_movement_log.occurred_at` 与 `left_employee_archive.archived_at`
+  存在浏览器按本地时间写入的历史值，只平移与同行 `created_at` 一致的记录；
+  `itil_change.planned_start_at/planned_end_at` 由用户手填，不平移。
+
+### 数据库与兼容
+
+- 不新增结构迁移；时区数据迁移是手工脚本，不进入自动迁移流程，需人工确认后执行。
+- 迁移后所有业务时间列均为北京时间，历史记录时间与实际发生时间一致。
+- 宿主机、Gitea、1Panel 组件不在本仓库范围，需按文档单独设置时区；
+  Gitea 使用 PostgreSQL `timestamptz`，切换时区不需要迁移数据。
+
+### 验证与回滚
+
+- 流程：全库备份 → 还原出「迁移前/迁移后」两个库做逐表逐列比对 → 生产切换。
+  演练结果：60 张数据表行数完全一致，58 张零差异，例外列 186/31 与 10/5 符合预期。
+- 生产校验：`audit_log` 最早记录 10:57 → 18:57、最新 07:50 → 15:50；
+  无未来时间行、`updated_at` 未被污染、既有会话仍然有效。
+- 回滚：删除标记行后用 `INTERVAL -8 HOUR` 重跑，或恢复迁移前备份并把 `TZ` 改回 UTC。
+
 ## v2.7.2
 
 发布日期：2026-09-17

@@ -146,6 +146,7 @@ node --check web\app.js
 - [文档索引](docs/README.md)
 - [开发指南](docs/development/guide.md)
 - [数据库迁移](docs/development/migrations.md)
+- [时区迁移（UTC → UTC+8）](docs/development/timezone-migration.md)
 - [Docker 部署](docs/deployment/docker.md)
 - [Ubuntu 原生部署](docs/deployment/ubuntu.md)
 - [Gitea 和更新服务](docs/deployment/gitea.md)

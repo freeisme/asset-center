@@ -4,6 +4,7 @@
 
 - [开发指南](development/guide.md)
 - [数据库迁移与升级](development/migrations.md)
+- [时区迁移（UTC → UTC+8）](development/timezone-migration.md)
 - [发布前脱敏检查](development/release-safety.md)
 - [前端和接口](../web/README.md)
 
