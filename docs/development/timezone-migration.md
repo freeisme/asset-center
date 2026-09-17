@@ -104,7 +104,37 @@ FROM inventory_movement_log WHERE occurred_at IS NOT NULL;
 以下由服务器运维或面板管理，需要单独处理：
 
 - **宿主机**：`sudo timedatectl set-timezone Asia/Shanghai`（影响系统日志、cron、面板显示）。
+  注意 `timedatectl` 只改 `/etc/localtime`（符号链接），`/etc/timezone` 可能仍是旧值，
+  需要单独补一致（有些容器会把这个文件挂进去）：
+
+  ```bash
+  sudo sh -c 'echo Asia/Shanghai > /etc/timezone'
+  ```
+
 - **Gitea / Gitea 数据库**：在各自的 compose 服务上加 `TZ=Asia/Shanghai` 后重建；
   Gitea 用 PostgreSQL `timestamptz`，内部按 UTC 存储，切换时区**不需要迁移数据**。
 - **1Panel 组件**（OpenResty、MySQL、node-exporter）：在 1Panel 的容器设置里加
   `TZ=Asia/Shanghai` 并重启；这些组件不存业务时间。
+
+### Alpine 镜像下 `TZ` 不会自动生效
+
+Gitea 官方镜像基于 **Alpine（musl libc）**且不带 tzdata：容器里没有
+`/usr/share/zoneinfo/Asia/Shanghai` 时，只设 `TZ=Asia/Shanghai` 会让 musl 解析失败并
+**退回 UTC**，此时连挂载进来的 `/etc/localtime` 都不会被采用。必须把宿主机的 zoneinfo
+挂进容器：
+
+```yaml
+    volumes:
+      - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
+```
+
+已运行的容器只会保留启动时解析到的时区，宿主机改完时区后必须重建或重启容器才会生效
+（`docker compose up -d` 在 compose 内容没变化时不会重建，会显示 `Running` 而不是
+`Recreated`，那是空操作）。
+
+### 不要改 Gitea 数据库的 PostgreSQL 会话时区
+
+Gitea 的时间字段绝大多数是 `bigint`（epoch 秒，与时区无关），只有 `created`、
+`expires_at` 这类 `timestamp without time zone` 字段按会话时区写入和比较。
+PostgreSQL 会话时区保持 `Etc/UTC` 时写入与过期判断自洽；改成 UTC+8 会让令牌过期判断
+整体偏移 8 小时。容器 `TZ` 只影响日志时间，不影响这个 GUC。
