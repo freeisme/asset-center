@@ -11,6 +11,8 @@ __pycache__/
 # 前端依赖与构建产物：由 pnpm build / Docker 多阶段构建生成
 frontend/node_modules/
 web/app/
+# 前端工程清单必须入库（*.json 规则会连带忽略 tsconfig.json）
+!frontend/tsconfig.json
 
 *.log
 tmp/
