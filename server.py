@@ -4892,13 +4892,15 @@ class AppHandler(SimpleHTTPRequestHandler):
                         "'itil_change', 'itil_problem', 'knowledge_article', 'sla_policy', "
                         "'service_workflow', 'service_workflow_step', 'service_approval', "
                         "'service_approval_decision', 'service_notification', 'service_form_permission', "
-                        "'scrap_reason', 'inventory_scrap_record', 'asset_scrap_record'"
+                        "'scrap_reason', 'inventory_scrap_record', 'asset_scrap_record', "
+                        "'asset_site', 'asset_rack', 'inspection_template', 'inspection_template_item', "
+                        "'inspection_task', 'inspection_task_item'"
                         ");",
                         database=DB_NAME,
                     ).strip(),
                     0,
                 )
-                required_table_count = 57
+                required_table_count = 63
                 healthy = probe == 1 and table_count == required_table_count
                 self.send_json(
                     {

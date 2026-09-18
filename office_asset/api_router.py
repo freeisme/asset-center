@@ -5,6 +5,7 @@ from typing import Callable
 from urllib.parse import ParseResult
 
 from .asset_service import AssetService
+from .inspection import InspectionService
 from .operations import DataQualityService, SyncService
 from .scope import OrganizationScopeService
 from .sql import SqlGateway
@@ -52,6 +53,13 @@ class DomainApiRouter:
         )
         self.sync = SyncService(deps.db, deps.api_error, deps.conflict_error)
         self.quality = DataQualityService(deps.db, deps.api_error)
+        self.inspection = InspectionService(
+            deps.db,
+            self.scope,
+            deps.api_error,
+            deps.conflict_error,
+            deps.forbidden_error,
+        )
 
     def _authenticated(self, handler: object) -> dict:
         return self.deps.require_auth(handler)
@@ -409,6 +417,95 @@ class DomainApiRouter:
             context = self._read_context(handler, "scrap_management")
             send_json({"record": self.assets.get_scrap_record(parts[3], context)})
             return True
+
+        # 巡检管理：机房、弱电间、机柜、巡检模板与巡检任务。
+        if path == "/api/inspection/sites" and method == "GET":
+            context = self._read_context(handler, "inspection_management")
+            send_json({"sites": self.inspection.list_sites(context, params)})
+            return True
+        if path == "/api/inspection/sites" and method == "POST":
+            context = self._write_context(handler, "inspection_management", "create")
+            send_json(self.inspection.create_site(self._payload(handler), context), status=201)
+            return True
+        if path.startswith("/api/inspection/sites/") and method == "PUT":
+            site_id = path.split("/")[-1]
+            context = self._write_context(handler, "inspection_management", "update")
+            send_json(self.inspection.update_site(site_id, self._payload(handler), context))
+            return True
+
+        if path == "/api/inspection/racks" and method == "GET":
+            context = self._read_context(handler, "inspection_management")
+            send_json({"racks": self.inspection.list_racks(context, params)})
+            return True
+        if path == "/api/inspection/racks" and method == "POST":
+            context = self._write_context(handler, "inspection_management", "create")
+            send_json(self.inspection.create_rack(self._payload(handler), context), status=201)
+            return True
+        if path.startswith("/api/inspection/racks/") and method == "PUT":
+            rack_id = path.split("/")[-1]
+            context = self._write_context(handler, "inspection_management", "update")
+            send_json(self.inspection.update_rack(rack_id, self._payload(handler), context))
+            return True
+
+        if path == "/api/inspection/templates" and method == "GET":
+            context = self._read_context(handler, "inspection_management")
+            send_json({"templates": self.inspection.list_templates(context)})
+            return True
+        if path == "/api/inspection/templates" and method == "POST":
+            context = self._write_context(handler, "inspection_management", "create")
+            send_json(self.inspection.create_template(self._payload(handler), context), status=201)
+            return True
+        if path.startswith("/api/inspection/templates/"):
+            template_id = path.split("/")[-1]
+            if method == "GET":
+                context = self._read_context(handler, "inspection_management")
+                send_json({"template": self.inspection.get_template(template_id, context)})
+                return True
+            if method == "PUT":
+                context = self._write_context(handler, "inspection_management", "update")
+                send_json(self.inspection.update_template(template_id, self._payload(handler), context))
+                return True
+
+        if path == "/api/inspection/tasks" and method == "GET":
+            context = self._read_context(handler, "inspection_management")
+            send_json({"tasks": self.inspection.list_tasks(context, params)})
+            return True
+        if path == "/api/inspection/tasks" and method == "POST":
+            context = self._write_context(handler, "inspection_management", "create")
+            send_json(
+                self.inspection.start_task(
+                    self._payload(handler),
+                    context,
+                    self._idempotency_key(handler),
+                ),
+                status=201,
+            )
+            return True
+        if path.startswith("/api/inspection/tasks/"):
+            parts = path.split("/")
+            if len(parts) == 8 and parts[5] == "items" and parts[7] == "check" and method == "POST":
+                context = self._write_context(handler, "inspection_management", "update")
+                send_json(
+                    self.inspection.check_item(
+                        parts[4],
+                        parts[6],
+                        self._payload(handler),
+                        context,
+                    )
+                )
+                return True
+            if len(parts) == 6 and parts[5] == "submit" and method == "POST":
+                context = self._write_context(handler, "inspection_management", "update")
+                send_json(self.inspection.submit_task(parts[4], self._payload(handler), context))
+                return True
+            if len(parts) == 6 and parts[5] == "void" and method == "POST":
+                context = self._write_context(handler, "inspection_management", "delete")
+                send_json(self.inspection.void_task(parts[4], self._payload(handler), context))
+                return True
+            if len(parts) == 5 and method == "GET":
+                context = self._read_context(handler, "inspection_management")
+                send_json({"task": self.inspection.get_task(parts[4], context)})
+                return True
 
         if path.startswith("/api/computers/") and path.endswith("/movement-history") and method == "GET":
             computer_id = path.split("/")[-2]

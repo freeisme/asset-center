@@ -170,6 +170,7 @@ const permissionModuleLabels = {
   inventory_operations: "物资流转记录",
   warehouse_management: "仓库管理",
   scrap_management: "报废管理",
+  inspection_management: "巡检管理",
   audit_logs: "操作日志",
   backups: "备份",
   role_management: "角色与权限",
@@ -378,6 +379,7 @@ function canViewPage(page) {
     inventory: "inventory_catalog",
     flowControl: "inventory_operations",
     scrapRecords: "scrap_management",
+    inspection: "inspection_management",
     dictionary: "organizations",
     audit: "audit_logs",
     tickets: "tickets",
@@ -3461,6 +3463,7 @@ function renderPage() {
   if (state.page === "inventory") return renderInventoryPage();
   if (state.page === "flowControl") return renderFlowControlPage();
   if (state.page === "scrapRecords") return renderScrapRecordsPage();
+  if (state.page === "inspection") return renderInspectionPage();
   if (state.page === "dictionary") return renderDictionaryPage();
   if (state.page === "audit") return renderAuditPage();
   if (state.page === "tickets") return renderTicketsPage();
@@ -8973,6 +8976,17 @@ document.addEventListener("click", (event) => {
           showToast(`工单加载失败：${error.message}`, true);
         });
     }
+    if (state.page === "inspection") {
+      loadInspectionData({ force: true })
+        .then(() => {
+          renderIfCurrentPage(targetPage);
+          maybeStartInspectionFromHash();
+        })
+        .catch((error) => {
+          console.error("Unable to load inspection data", error);
+          showToast(`巡检数据加载失败：${error.message}`, true);
+        });
+    }
     if (state.page === "serviceManagement") {
       loadServiceManagement()
         .then(() => renderIfCurrentPage(targetPage))
@@ -12385,6 +12399,1064 @@ document.addEventListener("drop", (event) => {
   }
   formDesignerState.dirty = true;
   render();
+});
+
+// ---------------------------------------------------------------- 机房巡检
+
+const API_INSPECTION_SITES = "/api/inspection/sites";
+const API_INSPECTION_RACKS = "/api/inspection/racks";
+const API_INSPECTION_TEMPLATES = "/api/inspection/templates";
+const API_INSPECTION_TASKS = "/api/inspection/tasks";
+
+const inspectionSiteTypeLabels = { server_room: "机房", weak_room: "弱电间", both: "通用" };
+const inspectionStatusLabels = { running: "进行中", submitted: "已提交", void: "已作废" };
+const inspectionResultLabels = { pending: "未检查", ok: "正常", fail: "异常", na: "不适用" };
+const inspectionValueTypeLabels = { ok_fail: "正常/异常", number: "数值", text: "文本", select: "选项" };
+
+let inspectionState = {
+  view: "tasks",
+  loaded: false,
+  loading: false,
+  sites: [],
+  racks: [],
+  templates: [],
+  tasks: [],
+  task: null,
+  statusFilter: "",
+};
+
+function inspectionScopeName(record) {
+  const parts = [record.siteName || "", record.rackName || ""].filter(Boolean);
+  return parts.length ? parts.join(" / ") : "—";
+}
+
+function inspectionEmptyState(message) {
+  return `<div class="empty-state">${escapeHtml(message)}</div>`;
+}
+
+async function loadInspectionData({ force = false } = {}) {
+  if (inspectionState.loading) return;
+  if (inspectionState.loaded && !force) return;
+  inspectionState.loading = true;
+  try {
+    const statusQuery = inspectionState.statusFilter
+      ? `?status=${encodeURIComponent(inspectionState.statusFilter)}`
+      : "";
+    const [sites, racks, templates, tasks] = await Promise.all([
+      requestJson(API_INSPECTION_SITES).catch(() => ({ sites: [] })),
+      requestJson(API_INSPECTION_RACKS).catch(() => ({ racks: [] })),
+      requestJson(API_INSPECTION_TEMPLATES).catch(() => ({ templates: [] })),
+      requestJson(`${API_INSPECTION_TASKS}${statusQuery}`).catch(() => ({ tasks: [] })),
+    ]);
+    inspectionState.sites = Array.isArray(sites.sites) ? sites.sites : [];
+    inspectionState.racks = Array.isArray(racks.racks) ? racks.racks : [];
+    inspectionState.templates = Array.isArray(templates.templates) ? templates.templates : [];
+    inspectionState.tasks = Array.isArray(tasks.tasks) ? tasks.tasks : [];
+    inspectionState.loaded = true;
+  } finally {
+    inspectionState.loading = false;
+  }
+}
+
+async function refreshInspectionTasks() {
+  const statusQuery = inspectionState.statusFilter
+    ? `?status=${encodeURIComponent(inspectionState.statusFilter)}`
+    : "";
+  const payload = await requestJson(`${API_INSPECTION_TASKS}${statusQuery}`);
+  inspectionState.tasks = Array.isArray(payload.tasks) ? payload.tasks : [];
+}
+
+async function loadInspectionTask(taskId) {
+  const payload = await requestJson(`${API_INSPECTION_TASKS}/${encodeURIComponent(taskId)}`);
+  inspectionState.task = payload.task || null;
+  if (inspectionState.task) {
+    const index = inspectionState.tasks.findIndex((task) => String(task.id) === String(taskId));
+    const summary = {
+      status: inspectionState.task.status,
+      itemTotal: inspectionState.task.itemTotal,
+      itemOk: inspectionState.task.itemOk,
+      itemFail: inspectionState.task.itemFail,
+      itemNa: inspectionState.task.itemNa,
+      submittedAt: inspectionState.task.submittedAt,
+    };
+    if (index >= 0) inspectionState.tasks[index] = { ...inspectionState.tasks[index], ...summary };
+  }
+  render();
+}
+
+function inspectionTemplatesForScope(scopeKind) {
+  return (inspectionState.templates || []).filter((template) => {
+    if (template.isActive === 0 || template.isActive === false) return false;
+    if (!scopeKind) return true;
+    return template.siteType === "both" || template.siteType === scopeKind;
+  });
+}
+
+function openInspectionStartModal(preselected = {}) {
+  if (!hasPermission("inspection_management", "create")) {
+    showToast("当前账号没有发起巡检的权限。", true);
+    return;
+  }
+  const templates = inspectionTemplatesForScope("site");
+  const sites = inspectionState.sites || [];
+  const racks = inspectionState.racks || [];
+  if (!templates.length) {
+    showToast("还没有可用的巡检模板，请先在巡检模板中创建。", true);
+    return;
+  }
+  if (!sites.length && !racks.length) {
+    showToast("还没有机房或机柜，请先在“机房与机柜”中维护。", true);
+    return;
+  }
+  const inspector = (authState.user && (authState.user.displayName || authState.user.username)) || "当前账号";
+  const selectedRack = racks.find((rack) => String(rack.code || "") === String(preselected.rackCode || ""));
+  const initialScopeKind = selectedRack ? "rack" : "site";
+  const templateOptions = inspectionTemplatesForScope(initialScopeKind)
+    .map(
+      (template) =>
+        `<option value="${escapeHtml(template.id)}">${escapeHtml(template.name)}（${escapeHtml(
+          inspectionSiteTypeLabels[template.siteType] || "通用",
+        )}）</option>`,
+    )
+    .join("");
+  const siteOptions = sites
+    .map(
+      (site) =>
+        `<option value="${escapeHtml(site.id)}">${escapeHtml(
+          `${inspectionSiteTypeLabels[site.siteType] || "机房"} · ${site.name}`,
+        )}</option>`,
+    )
+    .join("");
+  const rackOptions = racks
+    .map(
+      (rack) =>
+        `<option value="${escapeHtml(rack.id)}"${
+          selectedRack && String(selectedRack.id) === String(rack.id) ? " selected" : ""
+        }>${escapeHtml(`${rack.siteName || ""} / ${rack.name}`)}</option>`,
+    )
+    .join("");
+  openModal(
+    `${modalHeader("开始巡检", "执行人默认为开始巡检的账号；开始后按模板输出全部巡检事项。")}
+      <form data-form="inspection-start">
+        <div class="form-grid">
+          ${selectField(
+            "巡检对象类型",
+            "scopeKind",
+            initialScopeKind,
+            [
+              { value: "site", label: "机房 / 弱电间" },
+              { value: "rack", label: "单个机柜" },
+            ],
+            true,
+          )}
+          <div class="form-field" data-inspection-scope="site"${initialScopeKind === "site" ? "" : " hidden"}>
+            <label for="inspectionSiteId">机房 / 弱电间 *</label>
+            <select id="inspectionSiteId" name="siteId">${siteOptions}</select>
+          </div>
+          <div class="form-field" data-inspection-scope="rack"${initialScopeKind === "rack" ? "" : " hidden"}>
+            <label for="inspectionRackId">机柜 *</label>
+            <select id="inspectionRackId" name="rackId">${rackOptions}</select>
+          </div>
+          ${selectField("巡检模板", "templateId", "", templateOptions, true)}
+          ${inputField("执行人", "inspectorName", inspector, false, "", "text", "", "readonly")}
+        </div>
+        ${inputField("备注", "remarks", "", false, "可填写本次巡检的说明")}
+        <div class="modal-footer">
+          <button type="button" class="secondary-button" data-action="close-modal">取消</button>
+          <button type="submit" class="primary-button">开始巡检</button>
+        </div>
+      </form>`,
+    true,
+  );
+}
+
+async function handleInspectionStartSubmit(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  const scopeKind = String(data.scopeKind || "site");
+  const payload = {
+    templateId: String(data.templateId || ""),
+    scopeKind,
+    remarks: String(data.remarks || "").slice(0, 200),
+  };
+  if (scopeKind === "site") {
+    payload.siteId = String(data.siteId || "");
+    if (!payload.siteId) return showToast("请选择要巡检的机房或弱电间。", true);
+  } else {
+    payload.rackId = String(data.rackId || "");
+    if (!payload.rackId) return showToast("请选择要巡检的机柜。", true);
+  }
+  if (!payload.templateId) return showToast("请选择巡检模板。", true);
+  try {
+    const result = await runCommand(API_INSPECTION_TASKS, payload, "inspection-start");
+    closeModal();
+    showToast(`巡检已开始：${result.taskNo || ""}，共 ${result.itemTotal || 0} 项。`);
+    inspectionState.view = "tasks";
+    await refreshInspectionTasks();
+    await loadInspectionTask(result.id);
+  } catch (error) {
+    showToast(`开始巡检失败：${error.message}`, true);
+  }
+}
+
+async function submitInspectionCheck(taskId, itemId, result) {
+  const valueInput = document.querySelector(`[data-inspection-value="${itemId}"]`);
+  const notesInput = document.querySelector(`[data-inspection-notes="${itemId}"]`);
+  const valueText = valueInput ? valueInput.value.trim() : "";
+  const notes = notesInput ? notesInput.value.trim() : "";
+  if (result === "fail" && !notes) {
+    showToast("异常项必须填写说明。", true);
+    if (notesInput) notesInput.focus();
+    return;
+  }
+  try {
+    await runCommand(
+      `${API_INSPECTION_TASKS}/${encodeURIComponent(taskId)}/items/${encodeURIComponent(itemId)}/check`,
+      { result, valueText, notes },
+      "inspection-check",
+    );
+    await loadInspectionTask(taskId);
+  } catch (error) {
+    showToast(`保存巡检结果失败：${error.message}`, true);
+  }
+}
+
+async function submitInspectionTask() {
+  const task = inspectionState.task;
+  if (!task) return;
+  const summaryInput = document.querySelector('[data-inspection-field="abnormalSummary"]');
+  const payload = { abnormalSummary: summaryInput ? summaryInput.value.trim() : "" };
+  try {
+    const result = await runCommand(
+      `${API_INSPECTION_TASKS}/${encodeURIComponent(task.id)}/submit`,
+      payload,
+      "inspection-submit",
+    );
+    showToast(
+      result.itemFail
+        ? `巡检已提交：共 ${result.itemTotal} 项，异常 ${result.itemFail} 项。`
+        : `巡检已提交：共 ${result.itemTotal} 项，全部正常。`,
+    );
+    await refreshInspectionTasks();
+    await loadInspectionTask(task.id);
+  } catch (error) {
+    showToast(`提交巡检失败：${error.message}`, true);
+  }
+}
+
+async function voidInspectionTask(taskId) {
+  const reason = window.prompt("请填写作废原因（会写入操作日志）：", "");
+  if (reason === null) return;
+  if (!String(reason).trim()) return showToast("作废巡检任务必须填写原因。", true);
+  try {
+    await runCommand(
+      `${API_INSPECTION_TASKS}/${encodeURIComponent(taskId)}/void`,
+      { reason: String(reason).trim().slice(0, 200) },
+      "inspection-void",
+    );
+    showToast("巡检任务已作废。");
+    inspectionState.task = null;
+    await refreshInspectionTasks();
+    render();
+  } catch (error) {
+    showToast(`作废巡检任务失败：${error.message}`, true);
+  }
+}
+
+async function saveInspectionSite(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  const payload = {
+    code: String(data.code || "").trim(),
+    name: String(data.name || "").trim(),
+    siteType: String(data.siteType || "server_room"),
+    location: String(data.location || "").trim(),
+    remarks: String(data.remarks || "").trim(),
+  };
+  if (!payload.code || !payload.name) return showToast("机房/弱电间编码和名称不能为空。", true);
+  const siteId = form.dataset.id || "";
+  try {
+    if (siteId) {
+      await requestJson(`${API_INSPECTION_SITES}/${encodeURIComponent(siteId)}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+    } else {
+      await requestJson(API_INSPECTION_SITES, { method: "POST", body: JSON.stringify(payload) });
+    }
+    closeModal();
+    showToast("机房/弱电间已保存。");
+    await loadInspectionData({ force: true });
+    render();
+  } catch (error) {
+    showToast(`保存机房/弱电间失败：${error.message}`, true);
+  }
+}
+
+async function saveInspectionRack(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  const payload = {
+    code: String(data.code || "").trim(),
+    name: String(data.name || "").trim(),
+    siteId: String(data.siteId || ""),
+    heightU: String(data.heightU || "42").trim(),
+    remarks: String(data.remarks || "").trim(),
+  };
+  if (!payload.code || !payload.name || !payload.siteId) {
+    return showToast("机柜编码、名称和所属机房不能为空。", true);
+  }
+  const rackId = form.dataset.id || "";
+  try {
+    if (rackId) {
+      await requestJson(`${API_INSPECTION_RACKS}/${encodeURIComponent(rackId)}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+    } else {
+      await requestJson(API_INSPECTION_RACKS, { method: "POST", body: JSON.stringify(payload) });
+    }
+    closeModal();
+    showToast("机柜已保存。");
+    await loadInspectionData({ force: true });
+    render();
+  } catch (error) {
+    showToast(`保存机柜失败：${error.message}`, true);
+  }
+}
+
+function inspectionTemplateItemRow(item = {}) {
+  const valueType = item.valueType || "ok_fail";
+  const options = Object.entries(inspectionValueTypeLabels)
+    .map(
+      ([value, label]) =>
+        `<option value="${value}"${value === valueType ? " selected" : ""}>${escapeHtml(label)}</option>`,
+    )
+    .join("");
+  return `<tr data-inspection-template-item>
+    <td><input type="text" data-item-field="category" value="${escapeHtml(item.category || "")}" placeholder="类别" /></td>
+    <td><input type="text" data-item-field="title" value="${escapeHtml(item.title || "")}" placeholder="巡检事项" /></td>
+    <td><input type="text" data-item-field="checkMethod" value="${escapeHtml(
+      item.checkMethod || "",
+    )}" placeholder="检查方法" /></td>
+    <td><select data-item-field="valueType">${options}</select></td>
+    <td><input type="text" data-item-field="unit" value="${escapeHtml(item.unit || "")}" placeholder="单位" /></td>
+    <td><input type="text" data-item-field="normalRange" value="${escapeHtml(
+      item.normalRange || "",
+    )}" placeholder="正常范围" /></td>
+    <td><input type="checkbox" data-item-field="isRequired"${
+      item.isRequired === 0 || item.isRequired === false ? "" : " checked"
+    } /></td>
+    <td><button type="button" class="text-button" data-action="inspection-remove-item">删除</button></td>
+  </tr>`;
+}
+
+async function openInspectionTemplateModal(templateId = "") {
+  if (!hasPermission("inspection_management", "create") && !hasPermission("inspection_management", "update")) {
+    showToast("当前账号没有维护巡检模板的权限。", true);
+    return;
+  }
+  let template = { code: "", name: "", siteType: "both", description: "", items: [] };
+  if (templateId) {
+    try {
+      const payload = await requestJson(`${API_INSPECTION_TEMPLATES}/${encodeURIComponent(templateId)}`);
+      template = payload.template || template;
+    } catch (error) {
+      showToast(`加载巡检模板失败：${error.message}`, true);
+      return;
+    }
+  }
+  const items = Array.isArray(template.items) && template.items.length ? template.items : [{}];
+  openModal(
+    `${modalHeader(
+      templateId ? "编辑巡检模板" : "新增巡检模板",
+      "开始巡检时会把事项快照进当次巡检表，之后再改模板不影响历史记录。",
+    )}
+      <form data-form="inspection-template" data-id="${escapeHtml(templateId)}">
+        <div class="form-grid">
+          ${inputField("模板编码", "code", template.code || "", true, "例如 XJ-SERVER-ROOM")}
+          ${inputField("模板名称", "name", template.name || "", true, "例如 机房巡检")}
+          ${selectField("适用对象", "siteType", template.siteType || "both", [
+            { value: "server_room", label: "机房" },
+            { value: "weak_room", label: "弱电间" },
+            { value: "both", label: "通用" },
+          ], true)}
+          ${inputField("说明", "description", template.description || "", false, "可选")}
+        </div>
+        <div class="section-heading">
+          <div><h3>巡检事项</h3><span>逐项检查时按这里的顺序输出</span></div>
+          <button type="button" class="secondary-button" data-action="inspection-add-item">＋ 添加事项</button>
+        </div>
+        <div class="table-wrap inspection-template-items">
+          <table>
+            <thead><tr><th>类别</th><th>巡检事项</th><th>检查方法</th><th>取值类型</th><th>单位</th><th>正常范围</th><th>必填</th><th></th></tr></thead>
+            <tbody data-inspection-template-items>${items.map(inspectionTemplateItemRow).join("")}</tbody>
+          </table>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="secondary-button" data-action="close-modal">取消</button>
+          <button type="submit" class="primary-button">保存模板</button>
+        </div>
+      </form>`,
+    true,
+  );
+}
+
+async function saveInspectionTemplate(form) {
+  const rows = [...form.querySelectorAll("[data-inspection-template-item]")];
+  const items = rows
+    .map((row) => {
+      const read = (field) => {
+        const element = row.querySelector(`[data-item-field="${field}"]`);
+        return element ? element.value.trim() : "";
+      };
+      const checked = (field) => {
+        const element = row.querySelector(`[data-item-field="${field}"]`);
+        return element ? element.checked : false;
+      };
+      return {
+        category: read("category"),
+        title: read("title"),
+        checkMethod: read("checkMethod"),
+        valueType: read("valueType") || "ok_fail",
+        unit: read("unit"),
+        normalRange: read("normalRange"),
+        isRequired: checked("isRequired"),
+      };
+    })
+    .filter((item) => item.title);
+  if (!items.length) return showToast("至少需要一项巡检事项。", true);
+  const data = Object.fromEntries(new FormData(form).entries());
+  const payload = {
+    code: String(data.code || "").trim(),
+    name: String(data.name || "").trim(),
+    siteType: String(data.siteType || "both"),
+    description: String(data.description || "").trim(),
+    items,
+  };
+  if (!payload.code || !payload.name) return showToast("模板编码和名称不能为空。", true);
+  const templateId = form.dataset.id || "";
+  try {
+    if (templateId) {
+      await requestJson(`${API_INSPECTION_TEMPLATES}/${encodeURIComponent(templateId)}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+    } else {
+      await requestJson(API_INSPECTION_TEMPLATES, { method: "POST", body: JSON.stringify(payload) });
+    }
+    closeModal();
+    showToast("巡检模板已保存。");
+    await loadInspectionData({ force: true });
+    render();
+  } catch (error) {
+    showToast(`保存巡检模板失败：${error.message}`, true);
+  }
+}
+
+function openInspectionSiteModal(siteId = "") {
+  const site = (inspectionState.sites || []).find((item) => String(item.id) === String(siteId)) || {};
+  openModal(
+    `${modalHeader(
+      siteId ? "编辑机房/弱电间" : "新增机房/弱电间",
+      "巡检对象只包含机房、弱电间和其下的机柜。",
+    )}
+      <form data-form="inspection-site" data-id="${escapeHtml(siteId)}">
+        <div class="form-grid">
+          ${inputField("编码", "code", site.code || "", true, "例如 SR-01")}
+          ${inputField("名称", "name", site.name || "", true, "例如 主机房")}
+          ${selectField("类型", "siteType", site.siteType || "server_room", [
+            { value: "server_room", label: "机房" },
+            { value: "weak_room", label: "弱电间" },
+          ], true)}
+          ${inputField("位置描述", "location", site.location || "", false, "例如 1 号楼 2 层")}
+        </div>
+        ${inputField("备注", "remarks", site.remarks || "", false, "可选")}
+        <div class="modal-footer">
+          <button type="button" class="secondary-button" data-action="close-modal">取消</button>
+          <button type="submit" class="primary-button">保存</button>
+        </div>
+      </form>`,
+  );
+}
+
+function openInspectionRackModal(rackId = "") {
+  const rack = (inspectionState.racks || []).find((item) => String(item.id) === String(rackId)) || {};
+  const siteOptions = (inspectionState.sites || []).map((site) => ({
+    value: site.id,
+    label: `${inspectionSiteTypeLabels[site.siteType] || "机房"} · ${site.name}`,
+  }));
+  openModal(
+    `${modalHeader(rackId ? "编辑机柜" : "新增机柜", "机柜可以单独发起巡检，也可以在巡检整个机房时一并覆盖。")}
+      <form data-form="inspection-rack" data-id="${escapeHtml(rackId)}">
+        <div class="form-grid">
+          ${inputField("机柜编码", "code", rack.code || "", true, "例如 RACK-A01")}
+          ${inputField("机柜名称", "name", rack.name || "", true, "例如 A 列 1 号柜")}
+          ${selectField("所属机房/弱电间", "siteId", rack.siteId || "", siteOptions, true)}
+          ${inputField("高度（U）", "heightU", String(rack.heightU || 42), true, "默认 42", "number", "1")}
+        </div>
+        ${inputField("备注", "remarks", rack.remarks || "", false, "可选")}
+        <div class="modal-footer">
+          <button type="button" class="secondary-button" data-action="close-modal">取消</button>
+          <button type="submit" class="primary-button">保存</button>
+        </div>
+      </form>`,
+  );
+}
+
+function inspectionTaskTable() {
+  const tasks = inspectionState.tasks || [];
+  if (!tasks.length) return inspectionEmptyState("暂无巡检任务，点击“开始巡检”发起一次。");
+  return `<div class="table-wrap"><table>
+    <thead><tr><th>任务号</th><th>巡检对象</th><th>模板</th><th>执行人</th><th>开始时间</th><th>进度</th><th>状态</th><th>操作</th></tr></thead>
+    <tbody>${tasks
+      .map((task) => {
+        const progress = `${task.itemTotal || 0} 项 / 正常 ${task.itemOk || 0} / 异常 ${
+          task.itemFail || 0
+        } / 不适用 ${task.itemNa || 0}`;
+        const actions = [
+          `<button class="text-button" data-action="inspection-open-task" data-id="${escapeHtml(
+            task.id,
+          )}">${task.status === "running" ? "继续巡检" : "查看巡检表"}</button>`,
+        ];
+        if (task.status === "running" && hasPermission("inspection_management", "delete")) {
+          actions.push(
+            `<button class="text-button" data-action="inspection-void" data-id="${escapeHtml(task.id)}">作废</button>`,
+          );
+        }
+        return `<tr>
+          <td class="strong-cell">${escapeHtml(task.taskNo || "")}</td>
+          <td>${escapeHtml(inspectionScopeName(task))}</td>
+          <td>${escapeHtml(task.templateName || "")}</td>
+          <td>${escapeHtml(task.inspectorName || "")}</td>
+          <td>${escapeHtml(task.startedAt ? formatDateTime(task.startedAt) : "")}</td>
+          <td>${escapeHtml(progress)}</td>
+          <td><span class="status-chip">${escapeHtml(inspectionStatusLabels[task.status] || task.status)}</span></td>
+          <td>${actions.join(" ")}</td>
+        </tr>`;
+      })
+      .join("")}</tbody>
+  </table></div>`;
+}
+
+function renderInspectionTasksPanel() {
+  const canCreate = hasPermission("inspection_management", "create");
+  const statusOptions = [
+    ["", "全部状态"],
+    ["running", "进行中"],
+    ["submitted", "已提交"],
+    ["void", "已作废"],
+  ]
+    .map(
+      ([value, label]) =>
+        `<option value="${value}"${value === inspectionState.statusFilter ? " selected" : ""}>${escapeHtml(
+          label,
+        )}</option>`,
+    )
+    .join("");
+  return `<section class="data-panel">
+    <div class="section-heading"><div><h2>巡检任务</h2><span>开始巡检后按模板逐项检查，提交即生成完整巡检表</span></div>
+      <div class="toolbar-actions">
+        <select class="filter-select" data-action="inspection-filter-status">${statusOptions}</select>
+        <button class="secondary-button" data-action="inspection-refresh">刷新</button>
+        ${canCreate ? '<button class="primary-button" data-action="inspection-start">开始巡检</button>' : ""}
+      </div>
+    </div>
+    ${inspectionTaskTable()}
+  </section>`;
+}
+
+function renderInspectionTemplatesPanel() {
+  const templates = inspectionState.templates || [];
+  const canEdit = hasPermission("inspection_management", "update") || hasPermission("inspection_management", "create");
+  return `<section class="data-panel">
+    <div class="section-heading"><div><h2>巡检模板</h2><span>巡检事项字典，修改后只影响之后开始的巡检</span></div>
+      ${canEdit ? '<div class="toolbar-actions"><button class="primary-button" data-action="inspection-new-template">＋ 新增模板</button></div>' : ""}
+    </div>
+    ${
+      templates.length
+        ? `<div class="table-wrap"><table>
+            <thead><tr><th>模板编码</th><th>模板名称</th><th>适用对象</th><th>事项数</th><th>状态</th><th>说明</th><th>操作</th></tr></thead>
+            <tbody>${templates
+              .map(
+                (template) => `<tr>
+                  <td class="strong-cell">${escapeHtml(template.code || "")}</td>
+                  <td>${escapeHtml(template.name || "")}</td>
+                  <td>${escapeHtml(inspectionSiteTypeLabels[template.siteType] || "通用")}</td>
+                  <td>${escapeHtml(String(template.itemCount || 0))}</td>
+                  <td>${escapeHtml(template.isActive ? "启用" : "停用")}</td>
+                  <td>${escapeHtml(template.description || "—")}</td>
+                  <td>${
+                    canEdit
+                      ? `<button class="text-button" data-action="inspection-edit-template" data-id="${escapeHtml(
+                          template.id,
+                        )}">编辑</button>`
+                      : "—"
+                  }</td>
+                </tr>`,
+              )
+              .join("")}</tbody>
+          </table></div>`
+        : inspectionEmptyState("暂无巡检模板。")
+    }
+  </section>`;
+}
+
+function renderInspectionSitesPanel() {
+  const sites = inspectionState.sites || [];
+  const racks = inspectionState.racks || [];
+  const canCreate = hasPermission("inspection_management", "create");
+  return `<section class="data-panel">
+      <div class="section-heading"><div><h2>机房与弱电间</h2><span>巡检对象只包含机房、弱电间和其下的机柜</span></div>
+        ${canCreate ? '<div class="toolbar-actions"><button class="primary-button" data-action="inspection-new-site">＋ 新增机房/弱电间</button></div>' : ""}
+      </div>
+      ${
+        sites.length
+          ? `<div class="table-wrap"><table>
+              <thead><tr><th>编码</th><th>名称</th><th>类型</th><th>组织</th><th>位置</th><th>机柜数</th><th>操作</th></tr></thead>
+              <tbody>${sites
+                .map(
+                  (site) => `<tr>
+                    <td class="strong-cell">${escapeHtml(site.code || "")}</td>
+                    <td>${escapeHtml(site.name || "")}</td>
+                    <td>${escapeHtml(inspectionSiteTypeLabels[site.siteType] || "机房")}</td>
+                    <td>${escapeHtml(site.orgName || "—")}</td>
+                    <td>${escapeHtml(site.location || "—")}</td>
+                    <td>${escapeHtml(String(site.rackCount || 0))}</td>
+                    <td>${
+                      canCreate
+                        ? `<button class="text-button" data-action="inspection-edit-site" data-id="${escapeHtml(
+                            site.id,
+                          )}">编辑</button>`
+                        : "—"
+                    }</td>
+                  </tr>`,
+                )
+                .join("")}</tbody>
+            </table></div>`
+          : inspectionEmptyState("还没有机房或弱电间，请先新增。")
+      }
+    </section>
+    <section class="data-panel">
+      <div class="section-heading"><div><h2>机柜</h2><span>机柜可单独发起巡检，也可在巡检某个机房时一并覆盖</span></div>
+        ${canCreate ? '<div class="toolbar-actions"><button class="primary-button" data-action="inspection-new-rack">＋ 新增机柜</button></div>' : ""}
+      </div>
+      ${
+        racks.length
+          ? `<div class="table-wrap"><table>
+              <thead><tr><th>机柜编码</th><th>名称</th><th>所属机房/弱电间</th><th>高度</th><th>备注</th><th>操作</th></tr></thead>
+              <tbody>${racks
+                .map(
+                  (rack) => `<tr>
+                    <td class="strong-cell">${escapeHtml(rack.code || "")}</td>
+                    <td>${escapeHtml(rack.name || "")}</td>
+                    <td>${escapeHtml(
+                      `${inspectionSiteTypeLabels[rack.siteType] || "机房"} · ${rack.siteName || ""}`,
+                    )}</td>
+                    <td>${escapeHtml(`${rack.heightU || 0}U`)}</td>
+                    <td>${escapeHtml(rack.remarks || "—")}</td>
+                    <td>${
+                      canCreate
+                        ? `<button class="text-button" data-action="inspection-edit-rack" data-id="${escapeHtml(
+                            rack.id,
+                          )}">编辑</button>`
+                        : "—"
+                    }</td>
+                  </tr>`,
+                )
+                .join("")}</tbody>
+            </table></div>`
+          : inspectionEmptyState("还没有机柜。")
+      }
+    </section>`;
+}
+
+function renderInspectionTaskItem(item, editable) {
+  const result = item.result || "pending";
+  const buttons = ["ok", "fail", "na"]
+    .map(
+      (value) =>
+        `<button type="button" class="inspection-result-button${
+          result === value ? " is-active" : ""
+        }" data-action="inspection-check" data-result="${value}" data-id="${escapeHtml(
+          item.id,
+        )}"${editable ? "" : " disabled"}>${escapeHtml(inspectionResultLabels[value])}</button>`,
+    )
+    .join("");
+  const valueField =
+    item.valueType === "number" || item.valueType === "text"
+      ? `<input type="text" data-inspection-value="${escapeHtml(item.id)}" value="${escapeHtml(
+          item.valueText || "",
+        )}" placeholder="${item.valueType === "number" ? "实测值" : "记录"}"${editable ? "" : " disabled"} />`
+      : "";
+  return `<tr class="inspection-item${result === "fail" ? " is-abnormal" : ""}">
+    <td>${escapeHtml(String(item.seqNo || ""))}</td>
+    <td>${escapeHtml(item.category || "")}</td>
+    <td class="strong-cell">${escapeHtml(item.title || "")}${
+      item.checkMethod ? `<small class="cell-sub">${escapeHtml(item.checkMethod)}</small>` : ""
+    }</td>
+    <td>${buttons}</td>
+    <td>${valueField}${item.unit ? `<span class="cell-unit">${escapeHtml(item.unit)}</span>` : ""}</td>
+    <td><input type="text" data-inspection-notes="${escapeHtml(item.id)}" value="${escapeHtml(
+      item.notes || "",
+    )}" placeholder="${result === "fail" ? "必填：异常说明" : "说明"}"${editable ? "" : " disabled"} /></td>
+    <td>${escapeHtml(item.checkedAt ? formatDateTime(item.checkedAt) : "—")}</td>
+  </tr>`;
+}
+
+function renderInspectionTaskDetail(task) {
+  const items = Array.isArray(task.items) ? task.items : [];
+  const editable = task.status === "running";
+  const canSubmit = hasPermission("inspection_management", "update");
+  const abnormal = items.filter((item) => item.result === "fail");
+  return `<section class="data-panel inspection-detail">
+    <div class="section-heading">
+      <div>
+        <h2>${escapeHtml(task.taskNo || "")} · ${escapeHtml(inspectionScopeName(task))}</h2>
+        <span>${escapeHtml(task.templateName || "")} ｜ 执行人 ${escapeHtml(
+          task.inspectorName || "",
+        )} ｜ 开始 ${escapeHtml(task.startedAt ? formatDateTime(task.startedAt) : "")}${
+          task.submittedAt ? ` ｜ 提交 ${escapeHtml(formatDateTime(task.submittedAt))}` : ""
+        }</span>
+      </div>
+      <div class="toolbar-actions">
+        <button class="secondary-button" data-action="inspection-back">返回列表</button>
+        <button class="secondary-button" data-action="inspection-export">导出巡检表</button>
+        <button class="secondary-button" data-action="inspection-print">打印</button>
+        ${
+          editable && canSubmit
+            ? '<button class="primary-button" data-action="inspection-submit">提交巡检表</button>'
+            : ""
+        }
+      </div>
+    </div>
+    <div class="inspection-metrics">
+      <span>事项 <strong>${escapeHtml(String(items.length))}</strong></span>
+      <span>正常 <strong>${escapeHtml(String(task.itemOk || 0))}</strong></span>
+      <span class="${abnormal.length ? "is-abnormal" : ""}">异常 <strong>${escapeHtml(
+        String(task.itemFail || 0),
+      )}</strong></span>
+      <span>不适用 <strong>${escapeHtml(String(task.itemNa || 0))}</strong></span>
+      <span>状态 <strong>${escapeHtml(inspectionStatusLabels[task.status] || task.status)}</strong></span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>序号</th><th>类别</th><th>巡检事项</th><th>结论</th><th>实测值</th><th>说明</th><th>检查时间</th></tr></thead>
+        <tbody>${items.map((item) => renderInspectionTaskItem(item, editable)).join("")}</tbody>
+      </table>
+    </div>
+    ${
+      abnormal.length
+        ? `<div class="inspection-abnormal">
+            <h3>异常汇总</h3>
+            <ul>${abnormal
+              .map(
+                (item) =>
+                  `<li>${escapeHtml(item.title || "")}${item.valueText ? `：${escapeHtml(item.valueText)}` : ""} — ${escapeHtml(
+                    item.notes || "",
+                  )}</li>`,
+              )
+              .join("")}</ul>
+          </div>`
+        : ""
+    }
+    ${
+      editable
+        ? `<label class="form-field form-field-wide"><span>异常情况与处理建议（可留空，提交时会自动汇总异常项说明）</span>
+            <textarea data-inspection-field="abnormalSummary" rows="3" maxlength="500">${escapeHtml(
+              task.abnormalSummary || "",
+            )}</textarea>
+          </label>`
+        : task.abnormalSummary
+          ? `<div class="inspection-summary"><strong>异常情况与处理建议</strong><p>${escapeHtml(
+              task.abnormalSummary,
+            )}</p></div>`
+          : ""
+    }
+  </section>`;
+}
+
+function renderInspectionPage() {
+  if (!hasPermission("inspection_management", "view")) {
+    return inspectionEmptyState("当前账号没有巡检管理的查看权限。");
+  }
+  if (inspectionState.task) return renderInspectionTaskDetail(inspectionState.task);
+  const tabs = [
+    ["tasks", "巡检任务"],
+    ["templates", "巡检模板"],
+    ["sites", "机房与机柜"],
+  ];
+  const activeView = ["tasks", "templates", "sites"].includes(inspectionState.view)
+    ? inspectionState.view
+    : "tasks";
+  const panel =
+    activeView === "templates"
+      ? renderInspectionTemplatesPanel()
+      : activeView === "sites"
+        ? renderInspectionSitesPanel()
+        : renderInspectionTasksPanel();
+  return `<section class="page-intro">
+      <div><span class="eyebrow">INSPECTION</span><h2>机房巡检</h2>
+        <p>按机房、弱电间或单个机柜发起巡检，逐项记录结论并在提交后输出完整巡检表。</p></div>
+    </section>
+    <div class="settings-tabs">
+      ${tabs
+        .map(
+          ([value, label]) =>
+            `<button type="button" class="settings-tab${
+              value === activeView ? " is-active" : ""
+            }" data-action="inspection-view" data-view="${value}">${escapeHtml(label)}</button>`,
+        )
+        .join("")}
+    </div>
+    ${inspectionState.loading ? inspectionEmptyState("正在加载巡检数据…") : panel}`;
+}
+
+function inspectionExportSheets(task) {
+  const items = Array.isArray(task.items) ? task.items : [];
+  return [
+    {
+      name: "巡检表",
+      headers: ["项目", "内容"],
+      rows: [
+        ["巡检单号", task.taskNo || ""],
+        ["巡检对象", inspectionScopeName(task)],
+        ["巡检模板", task.templateName || ""],
+        ["执行人", task.inspectorName || ""],
+        ["开始时间", task.startedAt ? formatDateTime(task.startedAt) : ""],
+        ["提交时间", task.submittedAt ? formatDateTime(task.submittedAt) : ""],
+        ["事项总数", String(items.length)],
+        ["正常", String(task.itemOk || 0)],
+        ["异常", String(task.itemFail || 0)],
+        ["不适用", String(task.itemNa || 0)],
+        ["状态", inspectionStatusLabels[task.status] || task.status || ""],
+        ["异常情况与处理建议", task.abnormalSummary || ""],
+        ["备注", task.remarks || ""],
+      ],
+    },
+    {
+      name: "巡检明细",
+      headers: ["序号", "类别", "巡检事项", "检查方法", "结论", "实测值/记录", "单位", "说明", "检查时间", "检查人"],
+      rows: items.map((item) => [
+        String(item.seqNo || ""),
+        item.category || "",
+        item.title || "",
+        item.checkMethod || "",
+        inspectionResultLabels[item.result] || item.result || "",
+        item.valueText || "",
+        item.unit || "",
+        item.notes || "",
+        item.checkedAt ? formatDateTime(item.checkedAt) : "",
+        item.checkedByName || "",
+      ]),
+    },
+  ];
+}
+
+function exportInspectionTask() {
+  const task = inspectionState.task;
+  if (!task) return showToast("请先打开一张巡检表。", true);
+  downloadExcel(`机房巡检-${task.taskNo || exportDateStamp()}.xls`, inspectionExportSheets(task));
+}
+
+function printInspectionTask() {
+  const task = inspectionState.task;
+  if (!task) return showToast("请先打开一张巡检表。", true);
+  const items = Array.isArray(task.items) ? task.items : [];
+  const rows = items
+    .map(
+      (item) => `<tr>
+        <td>${escapeHtml(String(item.seqNo || ""))}</td>
+        <td>${escapeHtml(item.category || "")}</td>
+        <td>${escapeHtml(item.title || "")}<br /><small>${escapeHtml(item.checkMethod || "")}</small></td>
+        <td>${escapeHtml(inspectionResultLabels[item.result] || "")}</td>
+        <td>${escapeHtml(item.valueText || "")}${item.unit ? escapeHtml(item.unit) : ""}</td>
+        <td>${escapeHtml(item.notes || "")}</td>
+      </tr>`,
+    )
+    .join("");
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) return showToast("浏览器拦截了打印窗口，请允许弹出窗口后重试。", true);
+  printWindow.document.write(
+    `<html><head><meta charset="utf-8" /><title>${escapeHtml(task.taskNo || "巡检表")}</title>
+      <style>
+        body { font-family: "Microsoft YaHei", Arial, sans-serif; font-size: 12px; margin: 24px; }
+        h1 { font-size: 18px; margin: 0 0 4px; }
+        p.meta { color: #555; margin: 0 0 12px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid #999; padding: 5px 6px; text-align: left; vertical-align: top; }
+        th { background: #f0f0f0; }
+        tfoot td { border: none; padding-top: 18px; }
+      </style></head><body>
+      <h1>机房巡检表</h1>
+      <p class="meta">巡检单号 ${escapeHtml(task.taskNo || "")} ｜ 巡检对象 ${escapeHtml(
+        inspectionScopeName(task),
+      )} ｜ 模板 ${escapeHtml(task.templateName || "")} ｜ 执行人 ${escapeHtml(
+        task.inspectorName || "",
+      )} ｜ 开始 ${escapeHtml(task.startedAt ? formatDateTime(task.startedAt) : "")}${
+        task.submittedAt ? ` ｜ 提交 ${escapeHtml(formatDateTime(task.submittedAt))}` : ""
+      }</p>
+      <table><thead><tr><th>序号</th><th>类别</th><th>巡检事项</th><th>结论</th><th>实测值</th><th>说明</th></tr></thead>
+        <tbody>${rows}</tbody></table>
+      ${
+        task.abnormalSummary
+          ? `<p class="meta"><strong>异常情况与处理建议：</strong>${escapeHtml(task.abnormalSummary)}</p>`
+          : ""
+      }
+      <tfoot><table><tr><td>巡检人签字：</td><td>复核人签字：</td><td>日期：</td></tr></table></tfoot>
+    </body></html>`,
+  );
+  printWindow.document.close();
+  printWindow.focus();
+  printWindow.print();
+}
+
+function maybeStartInspectionFromHash() {
+  const hash = String(window.location.hash || "");
+  const match = hash.match(/inspection(?:[/?](?:rack|rackCode)=?)([A-Za-z0-9._-]+)/i);
+  if (!match) return;
+  const rackCode = match[1];
+  const rack = (inspectionState.racks || []).find((item) => String(item.code) === rackCode);
+  if (!rack) return;
+  openInspectionStartModal({ rackCode });
+}
+
+document.addEventListener("click", (event) => {
+  const actionElement = event.target.closest("[data-action]");
+  if (!actionElement) return;
+  const action = actionElement.dataset.action || "";
+  if (!action.startsWith("inspection-")) return;
+
+  if (action === "inspection-view") {
+    inspectionState.view = actionElement.dataset.view || "tasks";
+    inspectionState.task = null;
+    render();
+    return;
+  }
+  if (action === "inspection-start") {
+    openInspectionStartModal();
+    return;
+  }
+  if (action === "inspection-refresh") {
+    loadInspectionData({ force: true })
+      .then(() => render())
+      .catch((error) => showToast(`巡检数据加载失败：${error.message}`, true));
+    return;
+  }
+  if (action === "inspection-open-task") {
+    loadInspectionTask(actionElement.dataset.id || "").catch((error) =>
+      showToast(`加载巡检表失败：${error.message}`, true),
+    );
+    return;
+  }
+  if (action === "inspection-back") {
+    inspectionState.task = null;
+    render();
+    return;
+  }
+  if (action === "inspection-check") {
+    const task = inspectionState.task;
+    if (!task) return;
+    submitInspectionCheck(task.id, actionElement.dataset.id || "", actionElement.dataset.result || "");
+    return;
+  }
+  if (action === "inspection-submit") {
+    submitInspectionTask();
+    return;
+  }
+  if (action === "inspection-void") {
+    voidInspectionTask(actionElement.dataset.id || "");
+    return;
+  }
+  if (action === "inspection-export") {
+    exportInspectionTask();
+    return;
+  }
+  if (action === "inspection-print") {
+    printInspectionTask();
+    return;
+  }
+  if (action === "inspection-new-template") {
+    openInspectionTemplateModal();
+    return;
+  }
+  if (action === "inspection-edit-template") {
+    openInspectionTemplateModal(actionElement.dataset.id || "");
+    return;
+  }
+  if (action === "inspection-add-item") {
+    const body = document.querySelector("[data-inspection-template-items]");
+    if (body) body.insertAdjacentHTML("beforeend", inspectionTemplateItemRow({}));
+    return;
+  }
+  if (action === "inspection-remove-item") {
+    const row = actionElement.closest("[data-inspection-template-item]");
+    if (row) row.remove();
+    return;
+  }
+  if (action === "inspection-new-site") {
+    openInspectionSiteModal();
+    return;
+  }
+  if (action === "inspection-edit-site") {
+    openInspectionSiteModal(actionElement.dataset.id || "");
+    return;
+  }
+  if (action === "inspection-new-rack") {
+    openInspectionRackModal();
+  }
+});
+
+document.addEventListener("change", (event) => {
+  const element = event.target.closest("[data-action]");
+  const scopeSelect = event.target.closest('form[data-form="inspection-start"] select[name="scopeKind"]');
+  if (scopeSelect) {
+    const scopeKind = scopeSelect.value;
+    scopeSelect.closest("form").querySelectorAll("[data-inspection-scope]").forEach((field) => {
+      field.hidden = field.dataset.inspectionScope !== scopeKind;
+    });
+    const templateSelect = scopeSelect.closest("form").querySelector('select[name="templateId"]');
+    if (templateSelect) {
+      const options = inspectionTemplatesForScope(scopeKind);
+      templateSelect.innerHTML = options
+        .map(
+          (template) =>
+            `<option value="${escapeHtml(template.id)}">${escapeHtml(template.name)}（${escapeHtml(
+              inspectionSiteTypeLabels[template.siteType] || "通用",
+            )}）</option>`,
+        )
+        .join("");
+    }
+    return;
+  }
+  if (!element) return;
+  const action = element.dataset.action || "";
+  if (action === "inspection-filter-status") {
+    inspectionState.statusFilter = element.value || "";
+    refreshInspectionTasks()
+      .then(() => render())
+      .catch((error) => showToast(`巡检任务加载失败：${error.message}`, true));
+  }
+});
+
+document.addEventListener("submit", (event) => {
+  const form = event.target.closest("form[data-form]");
+  if (!form) return;
+  const type = form.dataset.form || "";
+  if (!type.startsWith("inspection-")) return;
+  event.preventDefault();
+  if (type === "inspection-start") {
+    handleInspectionStartSubmit(form);
+    return;
+  }
+  if (type === "inspection-site") {
+    saveInspectionSite(form);
+    return;
+  }
+  if (type === "inspection-rack") {
+    saveInspectionRack(form);
+    return;
+  }
+  if (type === "inspection-template") {
+    saveInspectionTemplate(form);
+  }
 });
 
 initializeTheme();

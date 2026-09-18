@@ -1323,8 +1323,8 @@ class ScrapManagementRegressionTests(TestCase):
 
         self.assertIn("AND ca.is_archived = 0", state_reader)
         self.assertIn("AND asset.is_archived = 0", service)
-        self.assertIn("'scrap_reason', 'inventory_scrap_record', 'asset_scrap_record'", state_reader)
-        self.assertIn("required_table_count = 57", state_reader)
+        self.assertIn("'scrap_reason', 'inventory_scrap_record', 'asset_scrap_record', ", state_reader)
+        self.assertIn("required_table_count = 63", state_reader)
 
     def test_frontend_exposes_scrap_actions_and_records_page(self):
         app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
@@ -1666,6 +1666,122 @@ class WarehouseInventoryRegressionTests(TestCase):
         self.assertIn('selectField("调入仓库", "targetWarehouseId"', app)
         self.assertIn("class=\"readonly-label\">当前仓库</span>", app)
         self.assertNotIn("<label>当前仓库</label>", app)
+
+
+class InspectionManagementRegressionTests(TestCase):
+    def test_inspection_migration_is_incremental_and_only_adds_objects(self):
+        migration = (
+            ROOT / "database" / "migrations" / "20260918_001_inspection_management.sql"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("CREATE TABLE IF NOT EXISTS asset_site", migration)
+        self.assertIn("CREATE TABLE IF NOT EXISTS asset_rack", migration)
+        self.assertIn("CREATE TABLE IF NOT EXISTS inspection_template", migration)
+        self.assertIn("CREATE TABLE IF NOT EXISTS inspection_template_item", migration)
+        self.assertIn("CREATE TABLE IF NOT EXISTS inspection_task", migration)
+        self.assertIn("CREATE TABLE IF NOT EXISTS inspection_task_item", migration)
+        self.assertIn("CHECK (site_type IN ('server_room', 'weak_room'))", migration)
+        self.assertIn("CHECK (scope_kind IN ('site', 'rack'))", migration)
+        self.assertIn("CHECK (result IN ('pending', 'ok', 'fail', 'na'))", migration)
+        self.assertIn("'inspection_management', '巡检管理'", migration)
+        self.assertIn("INSERT INTO auth_role_permission", migration)
+        self.assertIn("'XJ-SERVER-ROOM', '机房巡检'", migration)
+        self.assertIn("'XJ-WEAK-ROOM', '弱电间巡检'", migration)
+        # 巡检对象只包含机房、弱电间和机柜，不允许出现办公区或仓库对象。
+        self.assertNotIn("'office_area'", migration)
+        self.assertNotIn("'warehouse'", migration)
+        self.assertNotIn("DROP TABLE", migration.upper())
+        self.assertNotIn("DELETE FROM computer_asset", migration)
+        self.assertNotIn("DELETE FROM employee", migration)
+
+    def test_inspection_routes_require_dedicated_permissions(self):
+        router = (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8")
+
+        self.assertIn('self._read_context(handler, "inspection_management")', router)
+        self.assertIn('self._write_context(handler, "inspection_management", "create")', router)
+        self.assertIn('self._write_context(handler, "inspection_management", "update")', router)
+        self.assertIn('self._write_context(handler, "inspection_management", "delete")', router)
+        self.assertIn('path == "/api/inspection/sites" and method == "GET"', router)
+        self.assertIn('path == "/api/inspection/racks" and method == "POST"', router)
+        self.assertIn('path == "/api/inspection/templates" and method == "POST"', router)
+        self.assertIn('path == "/api/inspection/tasks" and method == "POST"', router)
+        self.assertIn('parts[7] == "check" and method == "POST"', router)
+        self.assertIn('parts[5] == "submit" and method == "POST"', router)
+        self.assertIn('parts[5] == "void" and method == "POST"', router)
+        self.assertIn("self.inspection.start_task(", router)
+        self.assertIn("self.inspection.submit_task(", router)
+        self.assertIn("self._idempotency_key(handler)", router)
+
+    def test_inspection_service_snapshots_items_and_requires_abnormal_notes(self):
+        service = (ROOT / "office_asset" / "inspection.py").read_text(encoding="utf-8")
+        start_task = service.split("    def start_task(", 1)[1].split(
+            "\n    def _task_items(",
+            1,
+        )[0]
+        check_item = service.split("    def check_item(", 1)[1].split(
+            "\n    def submit_task(",
+            1,
+        )[0]
+        submit_task = service.split("    def submit_task(", 1)[1].split(
+            "\n    def void_task(",
+            1,
+        )[0]
+
+        # 开始巡检时把模板事项快照进任务明细，模板后续修改不影响历史巡检表。
+        self.assertIn("INSERT INTO inspection_task_item", start_task)
+        self.assertIn("template_id = {template_id}", start_task)
+        self.assertIn("START TRANSACTION;", start_task)
+        self.assertIn("inspection_started", start_task)
+        self.assertIn('self._idempotency_result("inspection.task.start"', start_task)
+        self.assertIn('self._store_idempotency_result("inspection.task.start"', start_task)
+
+        # 异常项必须填写说明：填写时和提交时各校验一次。
+        self.assertIn('if result == "fail" and not notes:', check_item)
+        self.assertIn('raise self.api_error("异常项必须填写说明。")', check_item)
+        self.assertIn('== "fail"', submit_task)
+        self.assertIn("未填写说明", submit_task)
+        self.assertIn("未检查", submit_task)
+        self.assertIn("inspection_submitted", submit_task)
+        self.assertIn("status = 'submitted'", submit_task)
+        self.assertIn("AND status = 'running'", submit_task)
+
+        # 没有周期计划或自动派单：巡检只能手动发起，提交后不可修改。
+        self.assertNotIn("schedule", service.lower())
+        self.assertNotIn("cron", service.lower())
+
+    def test_void_requires_reason_and_records_audit(self):
+        service = (ROOT / "office_asset" / "inspection.py").read_text(encoding="utf-8")
+        void_task = service.split("    def void_task(", 1)[1]
+
+        self.assertIn("必须填写原因", void_task)
+        self.assertIn("inspection_voided", void_task)
+        self.assertIn("status = 'void'", void_task)
+        self.assertIn("已提交的巡检表不能作废", void_task)
+
+    def test_health_check_counts_the_inspection_tables(self):
+        server = (ROOT / "server.py").read_text(encoding="utf-8")
+
+        self.assertIn("'asset_site', 'asset_rack', 'inspection_template', 'inspection_template_item', ", server)
+        self.assertIn("'inspection_task', 'inspection_task_item'", server)
+        self.assertIn("required_table_count = 63", server)
+
+    def test_inspection_page_is_wired_into_navigation_and_exports(self):
+        index = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('data-page="inspection"', index)
+        self.assertIn('inspection_management: "巡检管理"', app)
+        self.assertIn('inspection: "inspection_management"', app)
+        self.assertIn('if (state.page === "inspection") return renderInspectionPage();', app)
+        self.assertIn('data-action="inspection-start"', app)
+        self.assertIn('data-action="inspection-check"', app)
+        self.assertIn('data-action="inspection-submit"', app)
+        self.assertIn('data-action="inspection-export"', app)
+        self.assertIn("inspectionExportSheets", app)
+        self.assertIn("异常项必须填写说明。", app)
+        self.assertIn("maybeStartInspectionFromHash", app)
+        # 巡检不生成周期计划，只允许手动开始。
+        self.assertNotIn("setInterval(() => loadInspectionData", app)
 
 
 if __name__ == "__main__":

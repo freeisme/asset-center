@@ -4,6 +4,60 @@
 可部署版本必须使用未占用的 SemVer 注释标签，并在标签对应提交中包含本文件的同名
 版本标题，例如 `v1.1.0`。
 
+## v2.8.0
+
+发布日期：2026-09-18
+
+### 新增：机房巡检管理
+
+- 巡检对象只包含**机房、弱电间和它们下面的机柜**，不含办公区终端与 IT 物资仓库。
+- 新增巡检模板与事项字典：类别、事项、检查方法、取值类型（正常异常 / 数值 / 文本 / 选项）、
+  单位、正常范围、是否必填。迁移自带 `XJ-SERVER-ROOM`（机房巡检，16 项）与
+  `XJ-WEAK-ROOM`（弱电间巡检，14 项）两张标准模板。
+- 开始巡检时把模板事项**快照**进本次任务明细，之后修改模板不影响历史巡检表。
+- 执行页逐项输出巡检事项：正常 / 异常 / 不适用三键记录，可填实测值与说明；
+  异常项必须填写说明，填写与提交两个环节都会校验。
+- 提交即定稿：未完成全部事项不能提交，提交后任务与明细只读，不能继续修改或作废；
+  作废未提交的任务必须填写原因。
+- 巡检表输出：整页预览、导出 Excel（巡检表摘要 + 巡检明细两个页签）、打印视图（带巡检人 /
+  复核人签字栏）。
+- 执行人默认为发起巡检的账号；不生成周期计划、不自动派单，只能手动点击“开始巡检”。
+- 扫码开检：打开 `/#inspection?rack=<机柜编码>` 会自动进入巡检页并预选该机柜，机柜编码不存在时不弹窗。
+
+### 权限与审计
+
+- 新增权限模块 `inspection_management`（查看 / 创建 / 修改 / 删除 / 导出），
+  管理员角色默认获得查看、创建、修改与导出。
+- 审计动作：`inspection_site_created`、`inspection_site_updated`、`inspection_rack_created`、
+  `inspection_rack_updated`、`inspection_template_created`、`inspection_template_updated`、
+  `inspection_started`、`inspection_submitted`、`inspection_voided`。
+
+### 数据库与接口
+
+- 新增迁移 `database/migrations/20260918_001_inspection_management.sql`：新增
+  `asset_site`、`asset_rack`、`inspection_template`、`inspection_template_item`、
+  `inspection_task`、`inspection_task_item` 六张表，写入两张标准模板与权限数据，
+  只新增对象，不改动历史业务数据。
+- 新增巡检接口：机房/弱电间、机柜、模板的资源接口，以及
+  `POST /api/inspection/tasks`（支持 `Idempotency-Key`）、
+  `POST /api/inspection/tasks/{id}/items/{itemId}/check`、
+  `POST /api/inspection/tasks/{id}/submit`、`POST /api/inspection/tasks/{id}/void`。
+- 健康检查 `/api/health` 的必需表数量由 57 提升为 63。
+- 详细说明见 [机房巡检管理](docs/development/inspection-management.md)。
+
+### 验证
+
+- 结构回归 `python -m unittest tests.test_regressions`：87 项通过（新增 6 项巡检用例）。
+- 端到端回归 `tests/integration/qa_inspection_regression.py`：模板读取、机房与机柜创建、
+  开始巡检快照、幂等重复提交、异常项必须填说明、未完成不可提交、提交后只读、
+  模板与对象不匹配被拒绝、审计留痕、只读账号被拒绝，全部通过。
+
+### 回滚提示
+
+- 本次只新增表、权限与接口，不修改既有表结构；回退代码到 v2.7.3 时，巡检相关表可以保留
+  （旧版本不读取这些表），如需彻底清理请先备份再删除六张巡检表。
+- `server.py` 的健康检查门槛与表清单必须和数据库同步回退，否则 `/api/health` 会返回 503。
+
 ## v2.7.3
 
 发布日期：2026-09-17
