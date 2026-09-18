@@ -20,7 +20,8 @@
 .
 ├── server.py                    # HTTP 应用入口
 ├── office_asset/                # 领域服务、仓储、权限和范围控制
-├── web/                         # 原生 HTML、CSS 和 JavaScript 前端
+├── frontend/                    # Vue 3 + TypeScript + Vite + Element Plus 前端源码
+├── web/                         # 前端构建产物（web/app）与迁移期旧前端
 ├── database/
 │   ├── bootstrap/               # 仅用于空库初始化的历史 SQL
 │   ├── migrations/              # 可追踪、不可修改的增量迁移
@@ -33,6 +34,7 @@
 ├── deploy/                      # Docker、Nginx、systemd、备份和更新脚本
 ├── docs/                        # 开发、部署、安全和发布文档
 ├── compose.yaml                 # MySQL、迁移器和应用编排
+├── VERSION                      # 应用版本（后端 /api/meta 与前端构建共用）
 └── VERSION_NOTES.md             # 版本说明，供更新服务读取
 ```
 
@@ -145,6 +147,7 @@ node --check web\app.js
 
 - [文档索引](docs/README.md)
 - [开发指南](docs/development/guide.md)
+- [前端结构与迁移说明](docs/development/frontend.md)
 - [数据库迁移](docs/development/migrations.md)
 - [时区迁移（UTC → UTC+8）](docs/development/timezone-migration.md)
 - [Docker 部署](docs/deployment/docker.md)

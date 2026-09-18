@@ -32,6 +32,25 @@ from office_asset.sql import SqlGateway, parse_bool
 
 ROOT_DIR = Path(__file__).resolve().parent
 WEB_DIR = ROOT_DIR / "web"
+# 新版 Vue 前端的构建产物目录，由 frontend/ 通过 pnpm build 生成。
+SPA_DIR = WEB_DIR / "app"
+# 渐进迁移期：旧版前端继续挂在 /legacy/ 下，由新外壳以 iframe 承载。
+LEGACY_PREFIX = "/legacy"
+
+
+def load_app_version() -> str:
+    """应用版本：优先 APP_VERSION 环境变量，其次仓库根目录的 VERSION 文件。"""
+    configured = os.environ.get("APP_VERSION", "").strip()
+    if configured:
+        return configured
+    try:
+        return (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip() or "0.0.0"
+    except OSError:
+        return "0.0.0"
+
+
+APP_VERSION = load_app_version()
+APP_BUILD_TIME = os.environ.get("APP_BUILD_TIME", "").strip()
 
 MYSQL_BIN = os.environ.get("MYSQL_BIN", "mysql")
 MYSQLDUMP_BIN = os.environ.get(
@@ -4868,6 +4887,18 @@ class AppHandler(SimpleHTTPRequestHandler):
         params = parse_qs(parsed.query, keep_blank_values=True)
         if DOMAIN_ROUTER.dispatch(self, parsed, params):
             return
+        if parsed.path == "/api/meta" and self.command == "GET":
+            # 只暴露版本与时间信息，不含主机、数据库或凭据细节。
+            self.send_json(
+                {
+                    "application": "office-asset-management",
+                    "version": APP_VERSION,
+                    "buildTime": APP_BUILD_TIME,
+                    "serverTime": datetime.now().isoformat(timespec="seconds"),
+                    "timeZone": datetime.now().astimezone().tzname() or "",
+                }
+            )
+            return
         if parsed.path == "/api/health" and self.command == "GET":
             try:
                 probe = sql_int(run_mysql("SELECT 1;", database=DB_NAME).strip(), 0)
@@ -5473,10 +5504,61 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         self.send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
+    def serve_frontend_route(self) -> bool:
+        """新版 SPA 与旧版前端的入口路由。
+
+        返回 True 表示请求已处理完毕，返回 False 表示继续交给静态文件处理。
+        旧版前端保留在 /legacy/ 下，静态资源仍按 web/ 根目录的相对路径解析。
+        """
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path == LEGACY_PREFIX:
+            self.send_response(HTTPStatus.MOVED_PERMANENTLY)
+            self.send_header("Location", f"{LEGACY_PREFIX}/")
+            self.end_headers()
+            return True
+        if path.startswith(f"{LEGACY_PREFIX}/"):
+            self._legacy_request = True
+            suffix = path[len(LEGACY_PREFIX) :]
+            self.path = suffix + (f"?{parsed.query}" if parsed.query else "")
+            return False
+        if path == "/":
+            self.send_spa_index()
+            return True
+        if (WEB_DIR / path.lstrip("/")).exists():
+            return False
+        # 无扩展名的路径视为前端路由（/settings、/computers…），
+        # 带扩展名的按静态文件处理，避免把 /favicon.ico 也回落成 HTML。
+        accept = self.headers.get("Accept", "")
+        wants_html = "text/html" in accept or accept.strip() in {"", "*/*"}
+        if "." in Path(path).name or not wants_html:
+            return False
+        self.send_spa_index()
+        return True
+
+    def send_spa_index(self) -> None:
+        """返回新版前端入口；尚未构建时回落到旧版入口，避免整站不可用。"""
+        index = SPA_DIR / "index.html"
+        if not index.exists():
+            index = WEB_DIR / "index.html"
+        try:
+            content = index.read_bytes()
+        except OSError:
+            self.send_error(HTTPStatus.NOT_FOUND, "Frontend entry not found")
+            return
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(content)
+
     def do_GET(self) -> None:
         try:
             if self.path.startswith("/api/"):
                 self.handle_api()
+                return
+            if self.serve_frontend_route():
                 return
             super().do_GET()
         except UnauthorizedError as exc:
@@ -5643,9 +5725,16 @@ class AppHandler(SimpleHTTPRequestHandler):
         if origin in {"http://127.0.0.1:8011", "http://localhost:8011"}:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
-        self.send_header("Content-Security-Policy", SECURITY_CSP)
+        # 渐进迁移期：只有旧版页面允许被同源 iframe 承载（新外壳用它承载未迁移页面）。
+        legacy_frame = bool(getattr(self, "_legacy_request", False))
+        self.send_header(
+            "Content-Security-Policy",
+            SECURITY_CSP
+            if not legacy_frame
+            else SECURITY_CSP.replace("frame-ancestors 'none';", "frame-ancestors 'self';"),
+        )
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Frame-Options", "SAMEORIGIN" if legacy_frame else "DENY")
         self.send_header("Referrer-Policy", "same-origin")
         self.send_header("Permissions-Policy", "camera=(), geolocation=(), microphone=(), payment=(), usb=()")
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")

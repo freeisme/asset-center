@@ -1,5 +1,6 @@
 import importlib.util
 import io
+import json
 import os
 import re
 import subprocess
@@ -1880,6 +1881,60 @@ class RackLayoutRegressionTests(TestCase):
         self.assertIn("is-conflict", app)
         self.assertIn("exportRackLayout", app)
         self.assertIn("printRackLayout", app)
+
+
+class FrontendSpaMigrationTests(TestCase):
+    """新版 Vue 前端（web/app）与旧前端桥接的回归约束。"""
+
+    def test_version_file_is_single_source_of_truth(self):
+        version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        notes = (ROOT / "VERSION_NOTES.md").read_text(encoding="utf-8")
+        latest_heading = next(
+            line.strip() for line in notes.splitlines() if line.startswith("## v")
+        )
+
+        self.assertRegex(version, r"^\d+\.\d+\.\d+$")
+        self.assertEqual(latest_heading, f"## v{version}")
+
+    def test_server_exposes_version_endpoint_and_frontend_routes(self):
+        source = (ROOT / "server.py").read_text(encoding="utf-8")
+
+        self.assertIn('APP_VERSION = load_app_version()', source)
+        self.assertIn('if parsed.path == "/api/meta" and self.command == "GET":', source)
+        self.assertIn('SPA_DIR = WEB_DIR / "app"', source)
+        self.assertIn('LEGACY_PREFIX = "/legacy"', source)
+        self.assertIn("def serve_frontend_route(self) -> bool:", source)
+        self.assertIn("def send_spa_index(self) -> None:", source)
+        # 只有旧版页面允许被同源 iframe 承载，其余仍然禁止被嵌入
+        self.assertIn('self.send_header("X-Frame-Options", "SAMEORIGIN" if legacy_frame else "DENY")', source)
+
+    def test_legacy_frontend_exposes_bridge_api(self):
+        app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("window.oaLegacy = {", app)
+        self.assertIn("getPage: () => state.page,", app)
+        self.assertIn("setPage: (page) => {", app)
+        self.assertIn("isAuthenticated: () => Boolean(authState.authenticated),", app)
+
+    def test_frontend_project_targets_web_app_and_keeps_stack_pinned(self):
+        config = (ROOT / "frontend" / "vite.config.ts").read_text(encoding="utf-8")
+        package = json.loads((ROOT / "frontend" / "package.json").read_text(encoding="utf-8"))
+
+        self.assertIn('outDir: "../web/app"', config)
+        self.assertIn('base: "/app/"', config)
+        self.assertIn("vue", package["dependencies"])
+        self.assertIn("vue-router", package["dependencies"])
+        self.assertIn("element-plus", package["dependencies"])
+        self.assertIn("vite", package["devDependencies"])
+        self.assertTrue((ROOT / "frontend" / "pnpm-lock.yaml").exists())
+
+    def test_docker_builds_frontend_in_multistage(self):
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+        self.assertIn("AS frontend", dockerfile)
+        self.assertIn("pnpm install --frozen-lockfile", dockerfile)
+        self.assertIn("COPY --from=frontend /web/app ./web/app", dockerfile)
+        self.assertIn("COPY VERSION ./", dockerfile)
 
 
 if __name__ == "__main__":

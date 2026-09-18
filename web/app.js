@@ -14181,3 +14181,21 @@ function printRackLayout() {
 
 initializeTheme();
 startAuth();
+
+// ---------------------------------------------------------------- 迁移桥接
+// 新版 Vue 外壳（/）通过该接口驱动 /legacy/ 里的旧前端：读取当前页面、切换页面、
+// 复用它已经实现好的主题与通知逻辑。页面逐页迁移完成后，这个接口可以整体删除。
+window.oaLegacy = {
+  version: 1,
+  getPage: () => state.page,
+  setPage: (page) => {
+    if (!page || typeof page !== "string" || state.page === page) return;
+    state.page = page;
+    render();
+  },
+  isAuthenticated: () => Boolean(authState.authenticated),
+  getTheme: () => document.documentElement.dataset.theme || "light",
+  setTheme: (theme) => {
+    document.documentElement.dataset.theme = theme === "dark" ? "dark" : "light";
+  },
+};

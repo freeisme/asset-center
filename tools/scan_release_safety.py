@@ -40,7 +40,9 @@ TEXT_EXTENSIONS = {
     ".sh",
     ".sql",
     ".toml",
+    ".ts",
     ".txt",
+    ".vue",
     ".yaml",
     ".yml",
 }

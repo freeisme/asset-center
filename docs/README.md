@@ -3,6 +3,7 @@
 ## 开发
 
 - [开发指南](development/guide.md)
+- [前端结构与迁移说明](development/frontend.md)
 - [数据库迁移与升级](development/migrations.md)
 - [时区迁移（UTC → UTC+8）](development/timezone-migration.md)
 - [发布前脱敏检查](development/release-safety.md)

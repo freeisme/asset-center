@@ -4,6 +4,49 @@
 可部署版本必须使用未占用的 SemVer 注释标签，并在标签对应提交中包含本文件的同名
 版本标题，例如 `v1.1.0`。
 
+## v2.10.0
+
+发布日期：2026-09-18
+
+### 新增
+
+- 前端迁移到主流 SPA 技术栈：Vue 3 + TypeScript + Vite + Element Plus + Vue Router，
+  源码位于 `frontend/`，构建产物输出到 `web/app/`。
+- 引入真实 URL 路由（History API）：`/dashboard`、`/computers`、`/rack-layout`、
+  `/settings` 等，支持刷新保持当前页、收藏与分享链接、浏览器前进后退。
+- 设置页新增「系统信息」，可以看到**当前系统版本**、前端构建版本与构建时间、服务端时间与时区、
+  数据库连接状态；登录页与顶栏也会显示当前版本。
+- 版本号改为单一来源：仓库根目录 `VERSION`，后端通过新增的 `GET /api/meta` 暴露，前端构建时注入。
+- 顶栏统一承载消息提醒、主题切换、重新加载数据、设置入口与退出登录。
+
+### 迁移方式（渐进）
+
+- 旧前端完整保留在 `web/` 并由 `/legacy/` 提供，新外壳用同源 iframe 承载尚未迁移的页面，
+  并代理其主题与页面切换；除设置页外其余 14 个页面暂由旧前端渲染。
+- 为保证同源 iframe 可用，仅 `/legacy/*` 的响应放宽为 `X-Frame-Options: SAMEORIGIN` 与
+  `frame-ancestors 'self'`，其余响应仍为 `DENY` / `frame-ancestors 'none'`。
+- 旧前端新增 `window.oaLegacy` 桥接接口（读取/切换页面、主题、登录态），逐页迁移完成后可整体删除。
+
+### 构建与部署
+
+- `Dockerfile` 改为多阶段构建：`node:22-alpine` 阶段执行 `pnpm install --frozen-lockfile && pnpm build`，
+  运行阶段只复制构建产物与 `VERSION`。
+- 本地开发：`cd frontend && pnpm install && pnpm build`（或 `pnpm dev` 起开发服务器）；
+  未构建时后端自动回落旧版入口，功能不受影响。
+- CI 增加前端依赖安装、类型检查与构建步骤。
+
+### 数据库与兼容
+
+- 不新增数据库迁移，接口保持不变；仅新增公开的 `GET /api/meta`（只返回版本与时间，不含主机与凭据信息）。
+- 浏览器需要支持 ES2020 与 History API。
+
+### 验证与回滚
+
+- 单元与结构回归 97 项通过；`vue-tsc` 类型检查与 Vite 生产构建通过。
+- 用真实浏览器端到端验证：登录后跳转 `/dashboard` 并稳定停留；侧边导航切换 `/computers`、
+  `/inventory`、`/inspection` 与旧前端页面标题一致；设置页显示 `v2.10.0`。
+- 回滚：删除 `web/app/`（后端会自动回落旧版入口）即恢复旧界面，数据库与接口无需回滚。
+
 ## v2.9.0
 
 发布日期：2026-09-18
