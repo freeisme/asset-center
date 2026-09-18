@@ -12,6 +12,15 @@ from unittest import TestCase, mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from office_asset.device_topology import (  # noqa: E402  (ROOT must be importable first)
+    NETBOX_DEVICE_TYPE_URL,
+    infer_category,
+    layout_template_ports,
+    parse_device_type_yaml,
+)
 
 
 def load_module(name: str, path: Path):
@@ -1325,7 +1334,7 @@ class ScrapManagementRegressionTests(TestCase):
         self.assertIn("AND ca.is_archived = 0", state_reader)
         self.assertIn("AND asset.is_archived = 0", service)
         self.assertIn("'scrap_reason', 'inventory_scrap_record', 'asset_scrap_record', ", state_reader)
-        self.assertIn("required_table_count = 64", state_reader)
+        self.assertIn("required_table_count = 69", state_reader)
 
     def test_frontend_exposes_scrap_actions_and_records_page(self):
         app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
@@ -1764,7 +1773,7 @@ class InspectionManagementRegressionTests(TestCase):
 
         self.assertIn("'asset_site', 'asset_rack', 'inspection_template', 'inspection_template_item', ", server)
         self.assertIn("'inspection_task'", server)
-        self.assertIn("required_table_count = 64", server)
+        self.assertIn("required_table_count = 69", server)
 
     def test_inspection_page_is_wired_into_navigation_and_exports(self):
         index = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
@@ -1866,21 +1875,20 @@ class RackLayoutRegressionTests(TestCase):
     def test_rack_layout_frontend_page_and_drag_editing_are_wired(self):
         index = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
         app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        navigation = (ROOT / "frontend" / "src" / "navigation.ts").read_text(encoding="utf-8")
+        view = (ROOT / "frontend" / "src" / "views" / "RackLayoutView.vue").read_text(encoding="utf-8")
+        api_client = (ROOT / "frontend" / "src" / "api" / "datacenter.ts").read_text(encoding="utf-8")
 
-        self.assertIn('data-page="rackLayout"', index)
-        self.assertIn('rack_layout: "机柜视图"', app)
-        self.assertIn('rackLayout: "rack_layout"', app)
-        self.assertIn('if (state.page === "rackLayout") return renderRackLayoutPage();', app)
-        self.assertIn("loadRackLayoutData", app)
-        self.assertIn('data-action="rack-layout-face"', app)
-        self.assertIn('data-action="rack-layout-remove"', app)
-        self.assertIn('data-action="rack-layout-export"', app)
-        self.assertIn('data-action="rack-layout-inspect"', app)
-        self.assertIn("rackConflicts(", app)
-        self.assertIn("document.addEventListener(\"pointerdown\"", app)
-        self.assertIn("is-conflict", app)
-        self.assertIn("exportRackLayout", app)
-        self.assertIn("printRackLayout", app)
+        # 机柜视图已迁移到 Vue：入口在新前端，旧前端不再保留同一页面。
+        self.assertIn('page: "rackLayout", path: "/rack-layout"', navigation)
+        self.assertNotIn('data-page="rackLayout"', index)
+        self.assertNotIn("renderRackLayoutPage", app)
+        self.assertIn("onPointerDown", view)
+        self.assertIn("placeAt", view)
+        self.assertIn("unlinkPlacement", view)
+        self.assertIn("printRack", view)
+        self.assertIn("exportCsv", view)
+        self.assertIn("/api/rack-layout/racks", api_client)
 
 
 class FrontendSpaMigrationTests(TestCase):
@@ -1935,6 +1943,185 @@ class FrontendSpaMigrationTests(TestCase):
         self.assertIn("pnpm install --frozen-lockfile", dockerfile)
         self.assertIn("COPY --from=frontend /web/app ./web/app", dockerfile)
         self.assertIn("COPY VERSION ./", dockerfile)
+
+
+class DevicePanelTopologyRegressionTests(TestCase):
+    SAMPLE_YAML = """---
+manufacturer: SampleVendor
+model: SampleSwitch 24
+slug: samplevendor-sampleswitch-24
+u_height: 1
+is_full_depth: false
+front_image: true
+rear_image: true
+comments: |
+  This block scalar must be ignored by the parser.
+interfaces:
+  - name: GE1
+    type: 1000base-t
+  - name: GE2
+    type: 1000base-t
+  - name: XGE1
+    type: 10gbase-x-sfpp
+power-ports:
+  - name: PSU1
+    type: iec-60320-c14
+console-ports:
+  - name: Console
+    type: rj-45
+"""
+
+    def test_migration_adds_catalog_ports_cables_and_positions(self):
+        migration = (
+            ROOT / "database" / "migrations" / "20260918_003_device_ports_and_cables.sql"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("CREATE TABLE IF NOT EXISTS device_type_catalog", migration)
+        self.assertIn("CREATE TABLE IF NOT EXISTS device_type_port_template", migration)
+        self.assertIn("CREATE TABLE IF NOT EXISTS rack_device_port", migration)
+        self.assertIn("CREATE TABLE IF NOT EXISTS rack_cable_run", migration)
+        self.assertIn("CREATE TABLE IF NOT EXISTS topology_node_position", migration)
+        self.assertIn("UNIQUE KEY uq_rack_port_name (placement_id, face, port_name)", migration)
+        # 一个端口只能有一条活动链路：软删除用生成列 + 唯一索引表达。
+        self.assertIn("a_active_key BIGINT UNSIGNED", migration)
+        self.assertIn("UNIQUE KEY uq_cable_port_a (a_active_key)", migration)
+        self.assertIn("UNIQUE KEY uq_cable_port_b (b_active_key)", migration)
+        self.assertIn("medium IN ('cat5e', 'cat6', 'fiber-om3', 'fiber-os2', 'dac', 'power', 'console', 'other')", migration)
+        self.assertIn("port_kind IN ('network', 'fiber', 'power', 'console', 'other')", migration)
+        self.assertNotIn("DROP TABLE", migration.upper())
+        self.assertNotIn("ALTER TABLE computer_asset", migration)
+        self.assertNotIn("quantity = quantity", migration)
+
+    def test_device_type_yaml_parser_reads_netbox_subset(self):
+        parsed = parse_device_type_yaml(self.SAMPLE_YAML)
+
+        self.assertEqual(parsed["slug"], "samplevendor-sampleswitch-24")
+        self.assertEqual(parsed["manufacturer"], "SampleVendor")
+        self.assertEqual(parsed["u_height"], 1.0)
+        self.assertEqual(parsed["category"], "network")
+        kinds = sorted(item["kind"] for item in parsed["ports"])
+        self.assertEqual(kinds, ["console", "fiber", "network", "network", "power"])
+        power_port = next(item for item in parsed["ports"] if item["kind"] == "power")
+        self.assertEqual(power_port["face"], "rear")
+        network_port = next(item for item in parsed["ports"] if item["name"] == "GE1")
+        self.assertEqual(network_port["type"], "1000base-t")
+        self.assertEqual(network_port["face"], "front")
+        # comments 块标量不能被解析成端口或标量
+        self.assertNotIn("comments", parsed)
+
+    def test_parser_rejects_invalid_input_and_infers_categories(self):
+        with self.assertRaises(ValueError):
+            parse_device_type_yaml("")
+        self.assertEqual(infer_category("PowerEdge R650", "dell-poweredge-r650"), "server")
+        self.assertEqual(infer_category("UniFi Switch 24 Pro", "ubiquiti-switch"), "network")
+        self.assertEqual(infer_category("Smart-UPS 3000", "apc-ups-3000"), "power")
+        self.assertEqual(infer_category("RS1221+", "synology-rs1221-plus"), "storage")
+
+    def test_template_ports_are_laid_out_into_rows(self):
+        parsed = parse_device_type_yaml(self.SAMPLE_YAML)
+        layouted = layout_template_ports(parsed["ports"])
+        network_rows = [item["row_index"] for item in layouted if item["kind"] == "network"]
+        self.assertEqual(network_rows, [1, 1])
+        positions = [item["position_index"] for item in layouted if item["kind"] == "network"]
+        self.assertEqual(positions, [1, 2])
+        self.assertEqual(len({item["row_index"] for item in layouted}), 4)
+
+    def test_routes_require_rack_layout_permissions_and_commands(self):
+        router = (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8")
+
+        self.assertIn('path == "/api/device-types" and method == "GET"', router)
+        self.assertIn('path == "/api/device-types/import" and method == "POST"', router)
+        self.assertIn('path == "/api/rack-layout/cables" and method == "POST"', router)
+        self.assertIn('path == "/api/rack-layout/cables/import" and method == "POST"', router)
+        self.assertIn('path == "/api/rack-layout/topology" and method == "GET"', router)
+        self.assertIn('path == "/api/rack-layout/topology/positions" and method == "POST"', router)
+        self.assertIn('len(parts) == 6 and parts[5] == "ports" and method == "POST"', router)
+        self.assertIn('len(parts) == 7 and parts[5] == "ports" and parts[6] == "import" and method == "POST"', router)
+        self.assertIn("self.device_topology.create_cable(", router)
+        self.assertIn("self.device_topology.import_ports_from_template(", router)
+        self.assertIn("self._read_context(handler, \"rack_layout\")", router)
+        self.assertIn("self._write_context(handler, \"rack_layout\", \"create\")", router)
+
+    def test_service_validates_endpoints_and_keeps_audit_trail(self):
+        service = (ROOT / "office_asset" / "device_topology.py").read_text(encoding="utf-8")
+        endpoint_check = service.split("    def _validate_cable_endpoints(", 1)[1].split(
+            "\n    def _validate_cable_payload(",
+            1,
+        )[0]
+        remove_port = service.split("    def remove_port(", 1)[1].split(
+            "\n    def import_ports_from_template(",
+            1,
+        )[0]
+
+        self.assertIn("链路两端不能是同一个端口", endpoint_check)
+        self.assertIn("已经连接到", endpoint_check)
+        for action in (
+            "device_type_imported",
+            "placement_ports_initialized",
+            "rack_port_created",
+            "rack_port_updated",
+            "rack_port_removed",
+            "rack_cable_created",
+            "rack_cable_updated",
+            "rack_cable_removed",
+            "topology_positions_saved",
+        ):
+            self.assertIn(action, service)
+        # 删除端口会级联删除它的链路，并写审计而不是留下悬挂链路。
+        self.assertIn("DELETE FROM rack_cable_run", remove_port)
+        self.assertIn("DELETE FROM rack_device_port", remove_port)
+        # 上架/端口操作都不改库存与台账记录。
+        self.assertNotIn("UPDATE computer_asset", service)
+        self.assertNotIn("quantity = quantity", service)
+
+    def test_import_tool_supports_multiple_sources_and_offline_mode(self):
+        tool = (ROOT / "tools" / "import_device_types.py").read_text(encoding="utf-8")
+
+        self.assertIn("class NetBoxLibrarySource", tool)
+        self.assertIn("class LocalFileSource", tool)
+        self.assertIn("class LocalDirSource", tool)
+        self.assertIn("register_source", tool)
+        self.assertIn("--no-images", tool)
+        self.assertIn("--dry-run", tool)
+        self.assertIn("--list", tool)
+        self.assertIn("download_images", tool)
+        self.assertIn("device_type_imported", tool)
+        self.assertIn(NETBOX_DEVICE_TYPE_URL.split("{")[0], (ROOT / "office_asset" / "device_topology.py").read_text(encoding="utf-8"))
+
+    def test_vue_pages_replaced_the_legacy_rack_layout_page(self):
+        navigation = (ROOT / "frontend" / "src" / "navigation.ts").read_text(encoding="utf-8")
+        router = (ROOT / "frontend" / "src" / "router" / "index.ts").read_text(encoding="utf-8")
+        legacy_app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        legacy_index = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('page: "rackLayout", path: "/rack-layout"', navigation)
+        self.assertIn('page: "devicePanel", path: "/device-panel"', navigation)
+        self.assertIn('page: "topology", path: "/topology"', navigation)
+        self.assertIn("RackLayoutView", router)
+        self.assertIn("DevicePanelView", router)
+        self.assertIn("TopologyView", router)
+        self.assertIn("MIGRATED_VIEWS", router)
+        for name in ("RackLayoutView.vue", "DevicePanelView.vue", "TopologyView.vue"):
+            self.assertTrue((ROOT / "frontend" / "src" / "views" / name).exists(), name)
+        self.assertIn("createCable", (ROOT / "frontend" / "src" / "views" / "DevicePanelView.vue").read_text(encoding="utf-8"))
+        self.assertIn("saveTopologyPositions", (ROOT / "frontend" / "src" / "views" / "TopologyView.vue").read_text(encoding="utf-8"))
+        self.assertIn("availableDevices", (ROOT / "frontend" / "src" / "views" / "RackLayoutView.vue").read_text(encoding="utf-8"))
+        # 旧前端的机柜视图已删除，避免两套实现并存
+        self.assertNotIn("renderRackLayoutPage", legacy_app)
+        self.assertNotIn('data-page="rackLayout"', legacy_index)
+
+    def test_health_check_counts_the_new_tables(self):
+        server_source = (ROOT / "server.py").read_text(encoding="utf-8")
+
+        for table in (
+            "device_type_catalog",
+            "device_type_port_template",
+            "rack_device_port",
+            "rack_cable_run",
+            "topology_node_position",
+        ):
+            self.assertIn(f"'{table}'", server_source)
+        self.assertIn("required_table_count = 69", server_source)
 
 
 if __name__ == "__main__":

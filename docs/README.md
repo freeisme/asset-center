@@ -4,6 +4,9 @@
 
 - [开发指南](development/guide.md)
 - [前端结构与迁移说明](development/frontend.md)
+- [机柜视图](development/rack-layout.md)
+- [设备面板与网络拓扑](development/device-panel-and-topology.md)
+- [机房巡检管理](development/inspection-management.md)
 - [数据库迁移与升级](development/migrations.md)
 - [时区迁移（UTC → UTC+8）](development/timezone-migration.md)
 - [发布前脱敏检查](development/release-safety.md)

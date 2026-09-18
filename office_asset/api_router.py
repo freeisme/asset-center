@@ -7,6 +7,7 @@ from urllib.parse import ParseResult
 from .asset_service import AssetService
 from .inspection import InspectionService
 from .rack_layout import RackLayoutService
+from .device_topology import DeviceTopologyService
 from .operations import DataQualityService, SyncService
 from .scope import OrganizationScopeService
 from .sql import SqlGateway
@@ -62,6 +63,13 @@ class DomainApiRouter:
             deps.forbidden_error,
         )
         self.rack_layout = RackLayoutService(
+            deps.db,
+            self.scope,
+            deps.api_error,
+            deps.conflict_error,
+            deps.forbidden_error,
+        )
+        self.device_topology = DeviceTopologyService(
             deps.db,
             self.scope,
             deps.api_error,
@@ -551,6 +559,95 @@ class DomainApiRouter:
             if len(parts) == 5 and method == "PUT":
                 context = self._write_context(handler, "rack_layout", "update")
                 send_json(self.rack_layout.update_placement(parts[4], self._payload(handler), context))
+                return True
+
+        # 设备面板与网络拓扑（阶段 1/2）：型号库、端口、线缆与拓扑坐标。
+        if path == "/api/device-types" and method == "GET":
+            context = self._read_context(handler, "rack_layout")
+            send_json({"deviceTypes": self.device_topology.list_device_types(context, params)})
+            return True
+        if path == "/api/device-types/import" and method == "POST":
+            context = self._write_context(handler, "rack_layout", "create")
+            send_json(self.device_topology.import_device_type(self._payload(handler), context), status=201)
+            return True
+        if path.startswith("/api/device-types/") and method == "GET":
+            catalog_id = path.split("/")[-1]
+            context = self._read_context(handler, "rack_layout")
+            send_json({"deviceType": self.device_topology.get_device_type(catalog_id, context)})
+            return True
+
+        if path == "/api/rack-layout/cables" and method == "GET":
+            context = self._read_context(handler, "rack_layout")
+            send_json({"cables": self.device_topology.list_cables(context, params)})
+            return True
+        if path == "/api/rack-layout/cables" and method == "POST":
+            context = self._write_context(handler, "rack_layout", "create")
+            send_json(
+                self.device_topology.create_cable(
+                    self._payload(handler),
+                    context,
+                    self._idempotency_key(handler),
+                ),
+                status=201,
+            )
+            return True
+        if path == "/api/rack-layout/cables/import" and method == "POST":
+            context = self._write_context(handler, "rack_layout", "create")
+            send_json(self.device_topology.import_cables(self._payload(handler), context), status=201)
+            return True
+        if path == "/api/rack-layout/topology" and method == "GET":
+            context = self._read_context(handler, "rack_layout")
+            send_json(self.device_topology.topology_graph(context, params))
+            return True
+        if path == "/api/rack-layout/topology/positions" and method == "POST":
+            context = self._write_context(handler, "rack_layout", "update")
+            send_json(self.device_topology.save_topology_positions(self._payload(handler), context))
+            return True
+        if path.startswith("/api/rack-layout/cables/"):
+            parts = path.split("/")
+            if len(parts) == 6 and parts[5] == "remove" and method == "POST":
+                context = self._write_context(handler, "rack_layout", "delete")
+                send_json(self.device_topology.remove_cable(parts[4], self._payload(handler), context))
+                return True
+            if len(parts) == 5 and method == "PUT":
+                context = self._write_context(handler, "rack_layout", "update")
+                send_json(self.device_topology.update_cable(parts[4], self._payload(handler), context))
+                return True
+        if path.startswith("/api/rack-layout/ports/"):
+            parts = path.split("/")
+            if len(parts) == 6 and parts[5] == "remove" and method == "POST":
+                context = self._write_context(handler, "rack_layout", "delete")
+                send_json(self.device_topology.remove_port(parts[4], self._payload(handler), context))
+                return True
+            if len(parts) == 5 and method == "PUT":
+                context = self._write_context(handler, "rack_layout", "update")
+                send_json(self.device_topology.update_port(parts[4], self._payload(handler), context))
+                return True
+        if path.startswith("/api/rack-layout/placements/"):
+            parts = path.split("/")
+            if len(parts) == 7 and parts[5] == "ports" and parts[6] == "import" and method == "POST":
+                context = self._write_context(handler, "rack_layout", "create")
+                send_json(
+                    self.device_topology.import_ports_from_template(
+                        parts[4],
+                        self._payload(handler),
+                        context,
+                    ),
+                    status=201,
+                )
+                return True
+            if len(parts) == 6 and parts[5] == "ports" and method == "POST":
+                context = self._write_context(handler, "rack_layout", "create")
+                send_json(
+                    self.device_topology.create_port(parts[4], self._payload(handler), context),
+                    status=201,
+                )
+                return True
+        if path.startswith("/api/rack-layout/racks/"):
+            parts = path.split("/")
+            if len(parts) == 6 and parts[5] == "ports" and method == "GET":
+                context = self._read_context(handler, "rack_layout")
+                send_json({"rack": self.device_topology.list_rack_ports(parts[4], context)})
                 return True
 
         if path.startswith("/api/computers/") and path.endswith("/movement-history") and method == "GET":

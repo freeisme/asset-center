@@ -22,6 +22,8 @@ export const NAV_ITEMS: NavItem[] = [
   { page: "dashboard", path: "/dashboard", title: "资产总览", group: "资产台账", modules: ["dashboard"] },
   { page: "computers", path: "/computers", title: "办公终端", group: "资产台账", modules: ["it_assets"] },
   { page: "rackLayout", path: "/rack-layout", title: "机柜视图", group: "资产台账", modules: ["rack_layout"] },
+  { page: "devicePanel", path: "/device-panel", title: "设备面板", group: "资产台账", modules: ["rack_layout"] },
+  { page: "topology", path: "/topology", title: "网络拓扑", group: "资产台账", modules: ["rack_layout"] },
   { page: "employees", path: "/employees", title: "使用人员", group: "资产台账", modules: ["employees"] },
   { page: "leftEmployees", path: "/left-employees", title: "离职人员", group: "资产台账", modules: ["employees"] },
   {

@@ -48,7 +48,10 @@ POST /api/rack-layout/placements/{id}/remove         下架（软删除，写原
 
 ## 前端
 
-侧栏「机柜视图」（`data-page="rackLayout"`）左侧是机柜图，右侧是属性面板与未上架设备池：
+v2.11.0 起「机柜视图」由 **Vue 页面**渲染（`frontend/src/views/RackLayoutView.vue`，
+路由 `/rack-layout`，在 `frontend/src/navigation.ts` 的 `NAV_ITEMS` 与
+`frontend/src/router/index.ts` 的 `MIGRATED_VIEWS` 中登记）；旧前端里的同名实现已删除，
+避免两套代码并存。左侧是机柜图，右侧是属性面板与未上架设备池：
 
 - 点设备选中，右侧改名称、起始 U 位、占用高度、设备类型、安装面板与备注；
 - 直接拖动设备换 U 位，吸附到整数 U，冲突时红框提示并拒绝保存；
@@ -56,6 +59,8 @@ POST /api/rack-layout/placements/{id}/remove         下架（软删除，写原
 - 前面板 / 后面板切换：整机深度设备照常显示，非当前面板设备置灰；
 - 导出设备清单（Excel）与打印机柜图（逐 U 打印视图）；
 - 「发起巡检」按当前机柜跳到巡检模块并预选该机柜。
+
+端口、线缆与拓扑图见[设备面板与网络拓扑](device-panel-and-topology.md)。
 
 ## 验证
 

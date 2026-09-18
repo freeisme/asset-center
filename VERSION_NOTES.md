@@ -4,6 +4,58 @@
 可部署版本必须使用未占用的 SemVer 注释标签，并在标签对应提交中包含本文件的同名
 版本标题，例如 `v1.1.0`。
 
+## v2.11.0
+
+发布日期：2026-09-18
+
+### 新增：设备面板与网络拓扑（阶段 1 + 阶段 2）
+
+- **型号库**：新增 `device_type_catalog` 与 `device_type_port_template`，从 NetBox
+  devicetype-library（CC0）导入厂商型号、U 高、类别、面板图与端口模板；解析器只覆盖该库的
+  YAML 子集（顶层标量 + `interfaces`/`power-ports`/`console-ports`），不引入第三方依赖。
+- **端口**：`rack_device_port` 属于已上架设备（`rack_device_placement`），支持端口名、类型、
+  类别、面板、行列位置、方向、速率与状态；按型号模板生成端口是快照，之后可单独增删改。
+- **线缆**：`rack_cable_run` 记录 A/B 两端端口、介质、长度、标签与状态；
+  **一个端口只能有一条活动链路**（生成列 + 唯一索引），不允许自己连自己，跨机柜与跨站点允许。
+- **设备面板页**（`/device-panel`）：按型号渲染设备面板，有面板图时用图片叠加端口热点，
+  没有时按端口模板自绘；端口按已连接/空闲/断开着色，点两个端口即可建立链路，
+  支持新增/编辑/删除端口、按型号一键生成端口、查看与删除本机柜链路。
+- **网络拓扑页**（`/topology`）：按端口连接自动分层（边界/核心 → 汇聚 → 接入），
+  节点可拖动微调并保存坐标，支持按机房/机柜过滤、只看有链路的设备、链路标签开关，
+  以及导出 SVG、导出 PNG（SVG → Canvas）与打印。
+- **机柜视图迁移到 Vue**：`/rack-layout` 改由 `frontend/src/views/RackLayoutView.vue` 渲染，
+  旧前端的同名实现已删除；功能保持不变（拖动换 U 位、上架下架、属性编辑、导出清单、
+  打印机柜图、发起巡检）。
+- 型号导入工具 `tools/import_device_types.py`：支持 `netbox`（GitHub 型号库，含面板图）、
+  `file`、`dir` 三种来源，`SOURCES` 注册表可扩展，支持 `--list`、`--dry-run`、`--no-images`。
+
+### 数据库与接口
+
+- 新增迁移 `database/migrations/20260918_003_device_ports_and_cables.sql`：新增
+  `device_type_catalog`、`device_type_port_template`、`rack_device_port`、`rack_cable_run`、
+  `topology_node_position` 五张表，只新增对象，不改动历史数据。
+- 新增接口：型号库列表/详情/导入，机柜端口清单，端口增删改与按模板生成，
+  链路增删改与批量导入，拓扑数据与坐标保存；权限沿用 `rack_layout` 模块。
+- 健康检查 `/api/health` 的必需表数量由 64 提升为 69。
+- 详细说明见 [设备面板与网络拓扑](docs/development/device-panel-and-topology.md)。
+
+### 验证
+
+- 结构回归 `python -m unittest tests.test_regressions`：106 项通过（新增 7 项用例，含 YAML 解析器单测）。
+- 前端 `vue-tsc --noEmit` 类型检查与 `vite build` 生产构建通过。
+- 端到端回归 `tests/integration/qa_device_topology_regression.py`：型号导入、端口模板生成（幂等）、
+  手工端口、机柜端口清单、链路创建与幂等、端口占用冲突、拓扑节点与链路、坐标保存、
+  删除链路与端口、审计留痕、只读账号 403，全部通过。
+- 机柜视图、机房巡检的端到端回归同步复跑通过。
+
+### 回滚提示
+
+- 本次只新增表与接口；回退代码到 v2.10.0 时这五张表可保留（旧版本不读取），
+  如需彻底清理请先备份再删除。
+- `server.py` 的健康检查门槛与表清单必须与数据库同步回退，否则 `/api/health` 返回 503。
+- 机柜视图已从旧前端移除，旧前端 `web/app.js` 不再包含该页面；如需回退到旧实现，
+  必须同时回退 `frontend/` 与 `web/` 两侧代码。
+
 ## v2.10.0
 
 发布日期：2026-09-18

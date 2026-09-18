@@ -325,7 +325,7 @@ def main() -> int:
     admin = login(fixture["admin"])
 
     status, health = admin.request("GET", "/api/health", expected=200)
-    assert health.get("requiredTableCount") == 57, health
+    assert health.get("requiredTableCount") == 69, health
     print("health ok:", status, health.get("requiredTables"), "/", health.get("requiredTableCount"))
 
     status, payload = admin.request("GET", "/api/scrap-reasons", expected=200)
