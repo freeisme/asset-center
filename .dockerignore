@@ -20,6 +20,12 @@ secrets/
 *.xls
 *.csv
 *.json
+# 前端构建需要在上下文里保留工程清单文件
+!frontend/package.json
+!frontend/tsconfig.json
+# 本地依赖与构建产物不进入构建上下文（Alpine 构建阶段会重新安装）
+frontend/node_modules/
+web/app/
 
 docs/
 deploy/

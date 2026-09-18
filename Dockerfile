@@ -10,6 +10,7 @@ RUN pnpm install --frozen-lockfile
 
 COPY frontend/ ./
 COPY VERSION /VERSION
+RUN mkdir -p /web/app
 RUN pnpm build
 
 FROM python:3.12-slim
