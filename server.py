@@ -4894,13 +4894,13 @@ class AppHandler(SimpleHTTPRequestHandler):
                         "'service_approval_decision', 'service_notification', 'service_form_permission', "
                         "'scrap_reason', 'inventory_scrap_record', 'asset_scrap_record', "
                         "'asset_site', 'asset_rack', 'inspection_template', 'inspection_template_item', "
-                        "'inspection_task', 'inspection_task_item'"
+                        "'inspection_task', 'inspection_task_item', 'rack_device_placement'"
                         ");",
                         database=DB_NAME,
                     ).strip(),
                     0,
                 )
-                required_table_count = 63
+                required_table_count = 64
                 healthy = probe == 1 and table_count == required_table_count
                 self.send_json(
                     {

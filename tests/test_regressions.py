@@ -1324,7 +1324,7 @@ class ScrapManagementRegressionTests(TestCase):
         self.assertIn("AND ca.is_archived = 0", state_reader)
         self.assertIn("AND asset.is_archived = 0", service)
         self.assertIn("'scrap_reason', 'inventory_scrap_record', 'asset_scrap_record', ", state_reader)
-        self.assertIn("required_table_count = 63", state_reader)
+        self.assertIn("required_table_count = 64", state_reader)
 
     def test_frontend_exposes_scrap_actions_and_records_page(self):
         app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
@@ -1762,8 +1762,8 @@ class InspectionManagementRegressionTests(TestCase):
         server = (ROOT / "server.py").read_text(encoding="utf-8")
 
         self.assertIn("'asset_site', 'asset_rack', 'inspection_template', 'inspection_template_item', ", server)
-        self.assertIn("'inspection_task', 'inspection_task_item'", server)
-        self.assertIn("required_table_count = 63", server)
+        self.assertIn("'inspection_task'", server)
+        self.assertIn("required_table_count = 64", server)
 
     def test_inspection_page_is_wired_into_navigation_and_exports(self):
         index = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
@@ -1782,6 +1782,104 @@ class InspectionManagementRegressionTests(TestCase):
         self.assertIn("maybeStartInspectionFromHash", app)
         # 巡检不生成周期计划，只允许手动开始。
         self.assertNotIn("setInterval(() => loadInspectionData", app)
+
+
+class RackLayoutRegressionTests(TestCase):
+    def test_rack_layout_migration_is_incremental_and_only_adds_objects(self):
+        migration = (ROOT / "database" / "migrations" / "20260918_002_rack_layout.sql").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("CREATE TABLE IF NOT EXISTS rack_device_placement", migration)
+        self.assertIn("UNIQUE KEY uq_rack_placement_computer (computer_id)", migration)
+        self.assertIn("CHECK (source_kind IN ('computer', 'custom'))", migration)
+        self.assertIn("CHECK (face IN ('front', 'rear', 'both'))", migration)
+        self.assertIn("CHECK (u_height BETWEEN 1 AND 50)", migration)
+        self.assertIn("'rack_layout', '机柜视图'", migration)
+        self.assertIn("INSERT INTO auth_role_permission", migration)
+        # 机柜视图是独立模块：只新增表与权限，不改动台账与历史数据。
+        self.assertNotIn("DROP TABLE", migration.upper())
+        self.assertNotIn("ALTER TABLE computer_asset", migration)
+        self.assertNotIn("DELETE FROM", migration.upper())
+        self.assertNotIn("quantity = quantity", migration)
+
+    def test_rack_layout_routes_require_dedicated_permissions(self):
+        router = (ROOT / "office_asset" / "api_router.py").read_text(encoding="utf-8")
+
+        self.assertIn('self._read_context(handler, "rack_layout")', router)
+        self.assertIn('self._write_context(handler, "rack_layout", "create")', router)
+        self.assertIn('self._write_context(handler, "rack_layout", "update")', router)
+        self.assertIn('self._write_context(handler, "rack_layout", "delete")', router)
+        self.assertIn('path == "/api/rack-layout/racks" and method == "GET"', router)
+        self.assertIn('path == "/api/rack-layout/available" and method == "GET"', router)
+        self.assertIn('len(parts) == 6 and parts[5] == "placements" and method == "POST"', router)
+        self.assertIn('len(parts) == 6 and parts[5] == "remove" and method == "POST"', router)
+        self.assertIn('len(parts) == 5 and method == "PUT"', router)
+        self.assertIn("self.rack_layout.place_device(", router)
+        self.assertIn("self.rack_layout.update_placement(", router)
+        self.assertIn("self.rack_layout.remove_placement(", router)
+        self.assertIn("self._idempotency_key(handler)", router)
+
+    def test_rack_layout_service_validates_faces_range_and_duplicates(self):
+        service = (ROOT / "office_asset" / "rack_layout.py").read_text(encoding="utf-8")
+        validate_slot = service.split("    def _validate_slot(", 1)[1].split(
+            "\n    @staticmethod",
+            1,
+        )[0]
+        place_device = service.split("    def place_device(", 1)[1].split(
+            "\n    def update_placement(",
+            1,
+        )[0]
+
+        # 前后面板各自成层：只有整机深度或同面才算冲突。
+        self.assertIn('(placement.face = \'both\' OR placement.face = ', service)
+        self.assertIn("hits = self._conflicting_placements(", validate_slot)
+        self.assertIn("超出机柜范围", validate_slot)
+        self.assertIn("U 位已被占用", validate_slot)
+        self.assertIn("position_u + u_height - 1 > height", validate_slot)
+        # 一台设备同时只能在一个机柜上架。
+        self.assertIn("该办公终端已经在某个机柜上架", place_device)
+        self.assertIn("已报废归档的办公终端不能上架", place_device)
+        self.assertIn("START TRANSACTION;", place_device)
+        self.assertIn("rack_placement_created", place_device)
+        self.assertIn('self._idempotency_result("rack.placement.create"', place_device)
+        self.assertIn('self._store_idempotency_result("rack.placement.create"', place_device)
+        # 上架不改变库存与固定资产状态。
+        self.assertNotIn("quantity = quantity", place_device)
+        self.assertNotIn("UPDATE computer_asset", place_device)
+        self.assertNotIn("it_inventory_model", place_device.replace("inventory_model_id", ""))
+
+    def test_rack_layout_occupancy_counts_physical_rows_and_audits_removal(self):
+        service = (ROOT / "office_asset" / "rack_layout.py").read_text(encoding="utf-8")
+        remove_placement = service.split("    def remove_placement(", 1)[1]
+
+        self.assertIn("def _occupied_units(", service)
+        self.assertIn("rows: set[int] = set()", service)
+        self.assertIn("used_units = self._occupied_units(placements)", service)
+        # 下架是软删除并写审计，不删除台账记录。
+        self.assertIn("SET is_active = 0", remove_placement)
+        self.assertIn("rack_placement_removed", remove_placement)
+        self.assertNotIn("DELETE FROM rack_device_placement", remove_placement)
+        self.assertNotIn("DELETE FROM computer_asset", remove_placement)
+
+    def test_rack_layout_frontend_page_and_drag_editing_are_wired(self):
+        index = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('data-page="rackLayout"', index)
+        self.assertIn('rack_layout: "机柜视图"', app)
+        self.assertIn('rackLayout: "rack_layout"', app)
+        self.assertIn('if (state.page === "rackLayout") return renderRackLayoutPage();', app)
+        self.assertIn("loadRackLayoutData", app)
+        self.assertIn('data-action="rack-layout-face"', app)
+        self.assertIn('data-action="rack-layout-remove"', app)
+        self.assertIn('data-action="rack-layout-export"', app)
+        self.assertIn('data-action="rack-layout-inspect"', app)
+        self.assertIn("rackConflicts(", app)
+        self.assertIn("document.addEventListener(\"pointerdown\"", app)
+        self.assertIn("is-conflict", app)
+        self.assertIn("exportRackLayout", app)
+        self.assertIn("printRackLayout", app)
 
 
 if __name__ == "__main__":

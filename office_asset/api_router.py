@@ -6,6 +6,7 @@ from urllib.parse import ParseResult
 
 from .asset_service import AssetService
 from .inspection import InspectionService
+from .rack_layout import RackLayoutService
 from .operations import DataQualityService, SyncService
 from .scope import OrganizationScopeService
 from .sql import SqlGateway
@@ -54,6 +55,13 @@ class DomainApiRouter:
         self.sync = SyncService(deps.db, deps.api_error, deps.conflict_error)
         self.quality = DataQualityService(deps.db, deps.api_error)
         self.inspection = InspectionService(
+            deps.db,
+            self.scope,
+            deps.api_error,
+            deps.conflict_error,
+            deps.forbidden_error,
+        )
+        self.rack_layout = RackLayoutService(
             deps.db,
             self.scope,
             deps.api_error,
@@ -505,6 +513,44 @@ class DomainApiRouter:
             if len(parts) == 5 and method == "GET":
                 context = self._read_context(handler, "inspection_management")
                 send_json({"task": self.inspection.get_task(parts[4], context)})
+                return True
+
+        # 机柜视图（独立模块）：机柜位置、设备上架与下架。
+        if path == "/api/rack-layout/racks" and method == "GET":
+            context = self._read_context(handler, "rack_layout")
+            send_json({"racks": self.rack_layout.list_racks(context, params)})
+            return True
+        if path == "/api/rack-layout/available" and method == "GET":
+            context = self._read_context(handler, "rack_layout")
+            send_json(self.rack_layout.available_devices(context, params))
+            return True
+        if path.startswith("/api/rack-layout/racks/"):
+            parts = path.split("/")
+            if len(parts) == 6 and parts[5] == "placements" and method == "POST":
+                context = self._write_context(handler, "rack_layout", "create")
+                send_json(
+                    self.rack_layout.place_device(
+                        parts[4],
+                        self._payload(handler),
+                        context,
+                        self._idempotency_key(handler),
+                    ),
+                    status=201,
+                )
+                return True
+            if len(parts) == 5 and method == "GET":
+                context = self._read_context(handler, "rack_layout")
+                send_json({"rack": self.rack_layout.list_placements(parts[4], context)})
+                return True
+        if path.startswith("/api/rack-layout/placements/"):
+            parts = path.split("/")
+            if len(parts) == 6 and parts[5] == "remove" and method == "POST":
+                context = self._write_context(handler, "rack_layout", "delete")
+                send_json(self.rack_layout.remove_placement(parts[4], self._payload(handler), context))
+                return True
+            if len(parts) == 5 and method == "PUT":
+                context = self._write_context(handler, "rack_layout", "update")
+                send_json(self.rack_layout.update_placement(parts[4], self._payload(handler), context))
                 return True
 
         if path.startswith("/api/computers/") and path.endswith("/movement-history") and method == "GET":

@@ -4,6 +4,51 @@
 可部署版本必须使用未占用的 SemVer 注释标签，并在标签对应提交中包含本文件的同名
 版本标题，例如 `v1.1.0`。
 
+## v2.9.0
+
+发布日期：2026-09-18
+
+### 新增：机柜视图（独立模块）
+
+- 新增独立模块「机柜视图」，权限模块 `rack_layout`，与「机房巡检」共用机房与机柜对象，
+  但职责分开：巡检管检查事项，机柜视图管设备装在哪。
+- 把台账设备放到机柜的具体 U 位：起始 U 位、占用高度（整数 U，1-50）、
+  安装面（前面板 / 后面板 / 整机深度），并可按 12 类机柜设备类型分类着色。
+- 位置规则：前后面板各自成层、可以同位共存；整机深度独占该 U 位；
+  越界、重叠、同一台办公终端重复上架都会被拒绝；已报废归档的设备不能上架。
+- 占用统计按物理 U 行去重：前后面板重叠不会重复计数。
+- 上架与下架都不改变库存和资产状态；固资编码、SN、使用人、状态仍以资产台账为准，
+  机柜位置变化写入审计。
+- 前端：侧栏「机柜视图」支持选中改属性、拖动换 U 位（吸附整数 U、冲突红框拒绝）、
+  从右侧未上架设备池点选后点空位上架、前后面板切换、导出设备清单（Excel）、
+  打印机柜图（逐 U 打印视图），以及按当前机柜一键「发起巡检」。
+
+### 数据库与接口
+
+- 新增迁移 `database/migrations/20260918_002_rack_layout.sql`：新增
+  `rack_device_placement` 表与 `rack_layout` 权限模块，只新增对象，不改动历史业务数据。
+- 新增接口：`GET /api/rack-layout/racks`、`GET /api/rack-layout/racks/{id}`、
+  `GET /api/rack-layout/available`、`POST /api/rack-layout/racks/{id}/placements`（支持
+  `Idempotency-Key`）、`PUT /api/rack-layout/placements/{id}`、
+  `POST /api/rack-layout/placements/{id}/remove`。
+- 审计动作：`rack_placement_created`、`rack_placement_updated`、`rack_placement_removed`。
+- 健康检查 `/api/health` 的必需表数量由 63 提升为 64。
+- 详细说明见 [机柜视图](docs/development/rack-layout.md)。
+
+### 验证
+
+- 结构回归 `python -m unittest tests.test_regressions`：92 项通过（新增 5 项机柜视图用例）。
+- 端到端回归 `tests/integration/qa_rack_layout_regression.py`：机柜列表占用统计、
+  未上架设备来源、上架与幂等重复提交、同面重叠拒绝、前后面板同位共存、越界拒绝、
+  移动与改高度的二次校验、下架后重新出现在未上架列表、审计留痕、只读账号被拒绝，全部通过。
+- 机房巡检端到端回归 `tests/integration/qa_inspection_regression.py` 同步复跑通过。
+
+### 回滚提示
+
+- 本次只新增表、权限与接口，不改动既有表结构；回退代码到 v2.8.0 时，
+  `rack_device_placement` 可以保留（旧版本不读取），如需彻底清理请先备份再删除该表。
+- `server.py` 的健康检查门槛与表清单必须和数据库同步回退，否则 `/api/health` 会返回 503。
+
 ## v2.8.0
 
 发布日期：2026-09-18
