@@ -56,8 +56,8 @@ body {
   width: 34px;
   height: 34px;
   border-radius: 8px;
-  background: #409eff;
-  color: #fff;
+  background: var(--el-color-primary, #409eff);
+  color: var(--oa-accent-contrast, #fff);
   font-weight: 700;
 }
 
@@ -95,7 +95,7 @@ body {
 }
 
 .oa-nav .el-menu-item.is-active {
-  background: #409eff;
+  background: var(--el-color-primary, #409eff);
   color: #fff;
 }
 

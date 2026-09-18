@@ -48,6 +48,33 @@ pnpm typecheck        # 只做类型检查
 
 发布新版本时先更新 `VERSION` 与 `VERSION_NOTES.md` 的同名条目，再打标签。
 
+## 主题色
+
+设置页「外观主题」提供预设色板、自定义取色器与恢复默认，实现见 `frontend/src/theme.ts`：
+
+- 写入 `--el-color-primary` 以及 Element Plus 派生的 `--el-color-primary-light-3/5/7/8/9`
+  与 `--el-color-primary-dark-2`（按 sRGB 插值计算），Element Plus 组件自动跟随；
+- 侧栏选中项与品牌块使用 `var(--el-color-primary)`，因此同步生效；
+- 迁移期通过 `applyLegacyAccent()` 把旧前端 iframe 的 `--teal` / `--teal-soft` 一并改写，
+  旧页面强调色也会跟随；
+- 选择结果写入 `localStorage` 的 `oa-theme-color`，启动时由 `main.ts` 在挂载前应用，
+  避免首屏闪色。
+
+主题色按浏览器保存，不写入服务端配置；深浅色模式（`oa-theme`）与主题色相互独立。
+
+## 迁移进度
+
+| 页面 | 状态 |
+| --- | --- |
+| 设置（系统信息 / 完整设置） | ✅ Vue（完整设置区域暂用 iframe 承载旧设置页） |
+| 操作日志 `/audit` | ✅ Vue（含筛选、分页、详情抽屉、CSV 导出） |
+| 机柜视图 `/rack-layout` | ✅ Vue |
+| 设备面板 `/device-panel` | ✅ Vue |
+| 网络拓扑 `/topology` | ✅ Vue |
+| 其余 12 个页面 | ⏳ 仍由旧前端在 `/legacy/` 渲染，经 iframe 承载 |
+
+新增页面迁移只需在 `frontend/src/views/` 写组件并在 `router/index.ts` 的 `MIGRATED_VIEWS` 注册。
+
 ## 渐进迁移：旧前端桥接
 
 15 个页面仍在旧前端里。为了让新旧界面共用一套导航与顶栏，同时不动旧代码：

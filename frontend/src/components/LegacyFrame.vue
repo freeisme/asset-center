@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
-  applyLegacyTheme,
   legacyAuthenticated,
   pushLegacyPage,
   registerLegacyFrame,
 } from "../legacyBridge";
+import { applyThemeColor, currentThemeColor } from "../theme";
 
 const props = defineProps<{ page: string }>();
 const emit = defineEmits<{ (event: "page-change", page: string): void }>();
@@ -66,7 +66,7 @@ function onFrameLoad(): void {
   style.textContent = FRAME_CHROME_CSS;
   doc.head?.appendChild(style);
   registerLegacyFrame(win);
-  applyLegacyTheme(document.documentElement.dataset.theme === "dark" ? "dark" : "light");
+  applyThemeColor(currentThemeColor(), { persist: false });
   loaded = true;
   pushed = false;
   waitForLegacyAuth();

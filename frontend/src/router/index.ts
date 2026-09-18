@@ -6,12 +6,14 @@ import SettingsView from "../views/SettingsView.vue";
 import RackLayoutView from "../views/RackLayoutView.vue";
 import DevicePanelView from "../views/DevicePanelView.vue";
 import TopologyView from "../views/TopologyView.vue";
+import AuditView from "../views/AuditView.vue";
 import { NAV_ITEMS, PATH_BY_PAGE } from "../navigation";
 import { canViewPage, firstVisiblePath, refreshSession, session } from "../session";
 
 /** 已迁移到 Vue 的页面；其余页面继续由旧前端在 iframe 中渲染。 */
 const MIGRATED_VIEWS: Record<string, Component> = {
   settings: SettingsView,
+  audit: AuditView,
   rackLayout: RackLayoutView,
   devicePanel: DevicePanelView,
   topology: TopologyView,

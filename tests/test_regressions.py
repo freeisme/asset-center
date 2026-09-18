@@ -1944,6 +1944,38 @@ class FrontendSpaMigrationTests(TestCase):
         self.assertIn("COPY --from=frontend /web/app ./web/app", dockerfile)
         self.assertIn("COPY VERSION ./", dockerfile)
 
+    def test_audit_page_migrated_to_vue(self):
+        router = (ROOT / "frontend" / "src" / "router" / "index.ts").read_text(encoding="utf-8")
+        view = (ROOT / "frontend" / "src" / "views" / "AuditView.vue").read_text(encoding="utf-8")
+        api = (ROOT / "frontend" / "src" / "api" / "audit.ts").read_text(encoding="utf-8")
+
+        self.assertIn("audit: AuditView,", router)
+        self.assertIn('from "../views/AuditView.vue"', router)
+        self.assertIn("fetchAuditLogs", api)
+        self.assertIn("/api/audit-logs?", api)
+        self.assertIn("auditLogsToCsv", view)
+        # 标签映射与旧前端保持一致（旧前端仍保留这些文案，便于对照）
+        legacy = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+        for label in ("离职归档", "办公终端分配变更", "库存数量变更"):
+            self.assertIn(label, legacy)
+            self.assertIn(label, api)
+
+    def test_theme_color_support(self):
+        theme = (ROOT / "frontend" / "src" / "theme.ts").read_text(encoding="utf-8")
+        settings = (ROOT / "frontend" / "src" / "views" / "SettingsView.vue").read_text(encoding="utf-8")
+        shell = (ROOT / "frontend" / "src" / "layouts" / "AppShell.vue").read_text(encoding="utf-8")
+        styles = (ROOT / "frontend" / "src" / "styles" / "app.css").read_text(encoding="utf-8")
+
+        self.assertIn("THEME_COLOR_PRESETS", theme)
+        self.assertIn("--el-color-primary", theme)
+        self.assertIn("--el-color-primary-light-", theme)
+        self.assertIn("oa-theme-color", theme)
+        self.assertIn("applyLegacyAccent", theme)
+        self.assertIn("外观主题", settings)
+        self.assertIn("恢复默认", settings)
+        self.assertIn("var(--el-color-primary", styles)
+        self.assertIn("toggleTheme", shell)
+
 
 class DevicePanelTopologyRegressionTests(TestCase):
     SAMPLE_YAML = """---

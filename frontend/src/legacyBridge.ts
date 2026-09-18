@@ -63,3 +63,15 @@ export function applyLegacyTheme(theme: string): void {
   const api = legacyApi();
   api?.setTheme?.(theme);
 }
+
+/** 迁移期：让旧前端页面的强调色跟随新版主题色。 */
+export function applyLegacyAccent(primary: string, soft: string): void {
+  if (!legacyWindow || legacyWindow.closed) return;
+  try {
+    const root = legacyWindow.document.documentElement;
+    root.style.setProperty("--teal", primary);
+    root.style.setProperty("--teal-soft", soft);
+  } catch {
+    // 跨文档访问失败时忽略，仅影响旧前端的强调色
+  }
+}

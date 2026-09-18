@@ -6,8 +6,10 @@ import "element-plus/theme-chalk/dark/css-vars.css";
 import "./styles/app.css";
 import App from "./App.vue";
 import { router } from "./router";
+import { applyThemeColor, currentThemeColor } from "./theme";
 
 const theme = window.localStorage.getItem("oa-theme") === "dark" ? "dark" : "light";
 document.documentElement.dataset.theme = theme;
+applyThemeColor(currentThemeColor(), { persist: false });
 
 createApp(App).use(router).use(ElementPlus, { locale: zhCn }).mount("#app");
